@@ -4,7 +4,7 @@ Marinara Engine용 채팅 기록 Import 확장 프로그램입니다.
 
 TXT, Excel (`.xlsx`), JSON 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
 
-**Version 1.4.0**
+**Version 1.4.1**
 
 ## 주요 기능
 

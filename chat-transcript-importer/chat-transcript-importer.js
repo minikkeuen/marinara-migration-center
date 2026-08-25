@@ -815,7 +815,7 @@
     const modeSelect = createElement("select");
     modeSelect.append(option("roleplay", "Roleplay"), option("conversation", "Conversation"));
     const characterSelect = createElement("select");
-    characterSelect.append(option("", "캐릭터를 선택하세요"));
+    characterSelect.append(option("", "캐릭터 없음"));
     characterSelect.disabled = true;
     const personaSelect = createElement("select");
     personaSelect.append(option("", "페르소나 없음"));
@@ -823,7 +823,7 @@
 
     const identityRow = createElement("div", { className: "cti-identity-grid" });
     identityRow.append(
-      makeField("캐릭터", characterSelect),
+      makeField("캐릭터", characterSelect, "선택하지 않아도 가져올 수 있습니다."),
       makeField("페르소나", personaSelect, "선택하지 않아도 가져올 수 있습니다."),
     );
     form.append(makeField("채팅 이름", chatNameInput), makeField("채팅 모드", modeSelect), identityRow);
@@ -931,7 +931,7 @@
       state.messages.filter((message, index) => !state.excludedMessageKeys.has(messageKey(message, index)));
     const updateImportAvailability = () => {
       importButton.disabled =
-        state.importing || !state.choicesLoaded || selectedMessages().length === 0 || !characterSelect.value;
+        state.importing || !state.choicesLoaded || selectedMessages().length === 0;
       cancelButton.disabled = state.importing;
       closeButton.disabled = state.importing;
     };
@@ -1112,7 +1112,7 @@
 
     importButton.addEventListener("click", async () => {
       const messagesToImport = selectedMessages();
-      if (state.importing || messagesToImport.length === 0 || !characterSelect.value) return;
+      if (state.importing || messagesToImport.length === 0) return;
       clearStatus();
       state.importing = true;
       updateImportAvailability();
@@ -1120,18 +1120,23 @@
       const timestamps = normalizedMessageTimestamps(messagesToImport);
       let createdChatId = null;
       try {
-        await apiRequest(`/api/characters/${encodeURIComponent(characterSelect.value)}`);
+        if (characterSelect.value) {
+          await apiRequest(`/api/characters/${encodeURIComponent(characterSelect.value)}`);
+        }
         if (personaSelect.value) {
           await apiRequest(`/api/characters/personas/${encodeURIComponent(personaSelect.value)}`);
         }
         const chatName =
-          chatNameInput.value.trim() || `${characterSelect.selectedOptions[0]?.textContent || "캐릭터"} 가져온 대화`;
+          chatNameInput.value.trim() ||
+          (characterSelect.value
+            ? `${characterSelect.selectedOptions[0]?.textContent || "캐릭터"} 가져온 대화`
+            : "가져온 대화");
         const chat = await apiRequest("/api/chats", {
           method: "POST",
           body: {
             name: chatName,
             mode: modeSelect.value,
-            characterIds: [characterSelect.value],
+            characterIds: characterSelect.value ? [characterSelect.value] : [],
             personaId: personaSelect.value || null,
             createdAt: timestamps[0],
             updatedAt: timestamps.at(-1),
@@ -1146,7 +1151,7 @@
             method: "POST",
             body: {
               role: message.role,
-              characterId: message.role === "assistant" ? characterSelect.value : null,
+              characterId: message.role === "assistant" && characterSelect.value ? characterSelect.value : null,
               content: message.content,
               createdAt: timestamps[index],
             },
@@ -1204,8 +1209,6 @@
         characterSelect.disabled = false;
         personaSelect.disabled = false;
         state.choicesLoaded = true;
-        if (characters.length === 0)
-          showStatus("error", "가져오기에 사용할 캐릭터가 없습니다. 먼저 캐릭터를 추가하세요.");
         updateImportAvailability();
       })
       .catch((error) => {
