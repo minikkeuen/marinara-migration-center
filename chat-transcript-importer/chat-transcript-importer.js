@@ -823,8 +823,8 @@
 
     const identityRow = createElement("div", { className: "cti-identity-grid" });
     identityRow.append(
-      makeField("캐릭터", characterSelect, "선택하지 않아도 가져올 수 있습니다."),
-      makeField("페르소나", personaSelect, "선택하지 않아도 가져올 수 있습니다."),
+      makeField("캐릭터", characterSelect),
+      makeField("페르소나", personaSelect),
     );
     form.append(makeField("채팅 이름", chatNameInput), makeField("채팅 모드", modeSelect), identityRow);
 
