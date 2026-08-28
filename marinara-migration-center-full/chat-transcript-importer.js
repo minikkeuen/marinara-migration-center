@@ -6,6 +6,8 @@
   const MAX_MESSAGES = 10_000;
   const MAX_TOTAL_CONTENT_CHARACTERS = 25_000_000;
   const PREVIEW_LIMIT = 20;
+  const BULK_IMPORT_THROTTLE_THRESHOLD = 100;
+  const importRequestCore = globalThis.MarinaraChatImportRequestCore;
   const PENDING_NAVIGATION_KEY = "marinara.chat-transcript-importer.pending-chat";
   const LAUNCHER_ATTRIBUTE = "data-marinara-migration-center-launcher";
   const migrationCenter = globalThis.MarinaraMigrationCenter || {};
@@ -19,6 +21,15 @@
     constructor(message) {
       super(message);
       this.name = "ImportValidationError";
+    }
+  }
+
+  class MarinaraApiError extends Error {
+    constructor(message, status, retryAfterMs) {
+      super(message);
+      this.name = "MarinaraApiError";
+      this.status = status;
+      this.retryAfterMs = retryAfterMs;
     }
   }
 
@@ -750,7 +761,8 @@
         payload && typeof payload === "object" && typeof payload.error === "string"
           ? payload.error
           : `Marinara API 요청이 실패했습니다 (${response.status}).`;
-      throw new Error(message);
+      const retryAfterMs = importRequestCore?.parseRetryAfter(response.headers?.get?.("Retry-After")) ?? null;
+      throw new MarinaraApiError(message, response.status, retryAfterMs);
     }
     return payload;
   }
@@ -1276,19 +1288,34 @@
       const timestamps = normalizedMessageTimestamps(messagesToImport);
       const selectedCharacterId = characterSelect.value || null;
       let createdChatId = null;
+      const requestScheduler = importRequestCore.createRequestScheduler({
+        request: apiRequest,
+        minIntervalMs:
+          messagesToImport.length >= BULK_IMPORT_THROTTLE_THRESHOLD ? importRequestCore.DEFAULT_MIN_INTERVAL_MS : 0,
+      });
+      const requestWithRetry = (path, options, label) =>
+        requestScheduler.run(path, options, {
+          onRetry: ({ delayMs }) => {
+            importButton.textContent = `${label} · 요청 제한으로 ${Math.max(1, Math.ceil(delayMs / 1_000))}초 대기 중…`;
+          },
+        });
       try {
         if (selectedCharacterId) {
-          await apiRequest(`/api/characters/${encodeURIComponent(selectedCharacterId)}`);
+          await requestWithRetry(`/api/characters/${encodeURIComponent(selectedCharacterId)}`, undefined, "캐릭터 확인 중");
         }
         if (personaSelect.value) {
-          await apiRequest(`/api/characters/personas/${encodeURIComponent(personaSelect.value)}`);
+          await requestWithRetry(
+            `/api/characters/personas/${encodeURIComponent(personaSelect.value)}`,
+            undefined,
+            "페르소나 확인 중",
+          );
         }
         const chatName =
           chatNameInput.value.trim() ||
           (selectedCharacterId
             ? `${characterSelect.selectedOptions[0]?.textContent || "캐릭터"} 가져온 대화`
             : "가져온 대화");
-        const chat = await apiRequest("/api/chats", {
+        const chat = await requestWithRetry("/api/chats", {
           method: "POST",
           body: {
             name: chatName,
@@ -1298,13 +1325,13 @@
             createdAt: timestamps[0],
             updatedAt: timestamps.at(-1),
           },
-        });
+        }, "채팅 생성 중");
         if (!chat?.id) throw new Error("생성된 채팅 ID를 받지 못했습니다.");
         createdChatId = chat.id;
         for (let index = 0; index < messagesToImport.length; index += 1) {
           const message = messagesToImport[index];
           importButton.textContent = `메시지 저장 중 ${index + 1} / ${messagesToImport.length}`;
-          await apiRequest(`/api/chats/${encodeURIComponent(createdChatId)}/messages`, {
+          await requestWithRetry(`/api/chats/${encodeURIComponent(createdChatId)}/messages`, {
             method: "POST",
             body: {
               role: message.role,
@@ -1312,7 +1339,7 @@
               content: message.content,
               createdAt: timestamps[index],
             },
-          });
+          }, `메시지 저장 중 ${index + 1} / ${messagesToImport.length}`);
         }
         showStatus(
           "success",
@@ -1326,7 +1353,12 @@
         let rollbackMessage = "";
         if (createdChatId) {
           try {
-            await apiRequest(`/api/chats/${encodeURIComponent(createdChatId)}`, { method: "DELETE" });
+            importButton.textContent = "불완전한 채팅 정리 중…";
+            await requestWithRetry(
+              `/api/chats/${encodeURIComponent(createdChatId)}`,
+              { method: "DELETE" },
+              "불완전한 채팅 정리 대기 중",
+            );
             rollbackMessage = " 생성된 불완전한 채팅은 삭제했습니다.";
           } catch (rollbackError) {
             rollbackMessage = ` 불완전한 채팅(${createdChatId})을 자동 삭제하지 못했습니다: ${
