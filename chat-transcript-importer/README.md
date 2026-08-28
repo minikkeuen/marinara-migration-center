@@ -2,13 +2,13 @@
 
 Marinara Engine용 채팅 기록 Import 확장 프로그램입니다.
 
-TXT, Excel (`.xlsx`), JSON 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
+TXT, Excel (`.xlsx`), JSON, JSONL 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
 
-**Version 1.4.1**
+**Version 1.4.2**
 
 ## 주요 기능
 
-- TXT / XLSX / JSON 채팅 Import
+- TXT / XLSX / JSON / JSONL 채팅 Import
 - TXT 화자 및 턴 형식 자동 인식
 - User / Assistant 역할 판정
 - 원본 날짜 및 시간 보존
@@ -21,6 +21,7 @@ TXT, Excel (`.xlsx`), JSON 형식의 대화 기록을 Marinara 채팅으로 가�
 - User 명령 및 OOC 전용 메시지 제거
 - `{{char}}`, `{{user}}` 이름 자동 치환
 - 정리 예정 항목 확인 및 개별 보존
+- 100개 이상 대량 Import 요청 속도 조절 및 요청 제한 자동 재시도
 
 ## 설치
 
@@ -64,6 +65,18 @@ ENABLE_EXTERNAL_EXTENSIONS=true
 ```
 
 명시적인 역할 표시가 없는 TXT는 Import 화면의 역할 설정을 기준으로 User와 Assistant를 구분합니다.
+
+## JSONL Import
+
+JSONL은 빈 줄을 제외하고 한 줄씩 독립된 JSON 객체로 읽습니다. 직접 `role` / `content`를 가진 메시지 외에도 `sender` / `text`, 중첩 `message`, `messages`, `conversation`, `conversations`, `turns` 배열과 일반적인 user/assistant 쌍을 인식합니다. 변환된 메시지는 JSON Import와 동일한 role, content, name, timestamp 검증을 거친 뒤 기존 미리보기와 저장 흐름을 사용합니다.
+
+첫 객체가 `user_name`, `character_name` 또는 `chat_metadata`를 포함하고 `mes`가 없으면 대화 메타데이터로 인식해 메시지에서 제외합니다. 이후 내부 메시지 행은 `mes`를 본문으로 사용하고, 명시된 `role`을 우선하며 없을 때 `is_system`과 `is_user`로 역할을 판정합니다. `send_date: null`은 기존 timestamp fallback에 맡깁니다. 현재 Import 저장 흐름은 swipe 생성을 지원하지 않으므로 `swipes`와 `swipe_id`는 Import를 막지 않고 건너뛰며 `mes`를 그대로 저장합니다.
+
+일부 행의 JSON 문법이나 메시지 필드가 잘못되어도 유효한 행은 계속 불러옵니다. 제외된 행 수와 행 번호별 원인은 Import 화면의 경고에 표시합니다.
+
+JSON/JSONL의 **본문 정리 사용**은 기본적으로 꺼져 있습니다. 켜면 TXT와 같은 공통 본문 정리 단계에서 상태창, 이미지 호출·임베드, 내부 HTML 주석, 메시지 끝 날짜/시간, User OOC·명령어 전용 메시지와 거의 빈 메시지를 감지합니다. 감지 결과는 기존 정리 항목 검토에서 개별적으로 보존할 수 있습니다. JSON/JSONL 구조 자체와 부가 필드는 이 옵션으로 변경하지 않습니다.
+
+JSON 문자열 디코딩 뒤에도 명령어나 빈 잔여물을 감싼 바깥 따옴표가 남을 수 있습니다. 정리 판정은 균형 잡힌 직선·스마트·CJK 따옴표와 escape된 바깥 따옴표를 판정용 값에서만 해제합니다. 사용자가 정리 항목을 보존하면 실제 메시지의 따옴표와 본문은 수정하지 않습니다.
 
 ## TXT 정리
 

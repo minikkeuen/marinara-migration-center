@@ -1,16 +1,19 @@
 {
   "kind": "marinara.personal-extension",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "config": {
     "name": "Chat Transcript Importer",
-    "version": "1.4.1",
-    "description": "Excel, JSON 또는 TXT 대화 기록을 실제 Marinara 채팅 메시지로 가져옵니다.",
+    "version": "1.4.2",
+    "description": "Excel, JSON, JSONL 또는 TXT 대화 기록을 실제 Marinara 채팅 메시지로 가져옵니다.",
     "runtime": "client",
     "capabilities": [
       "full_page_access"
     ],
     "jsPath": [
       "xlsx-parser.js",
+      "jsonl-parser.js",
+      "message-cleanup-core.js",
+      "chat-import-request-core.js",
       "chat-transcript-importer.js"
     ],
     "cssPath": "chat-transcript-importer.css"

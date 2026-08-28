@@ -6,15 +6,33 @@
   const MAX_MESSAGES = 10_000;
   const MAX_TOTAL_CONTENT_CHARACTERS = 25_000_000;
   const PREVIEW_LIMIT = 20;
+  const MAX_JSONL_ISSUES_SHOWN = 50;
+  const BULK_IMPORT_THROTTLE_THRESHOLD = 100;
   const PENDING_NAVIGATION_KEY = "marinara.chat-transcript-importer.pending-chat";
   const LAUNCHER_ATTRIBUTE = "data-chat-transcript-importer-launcher";
+  const importRequestCore = globalThis.MarinaraChatImportRequestCore;
+  const messageCleanupCore = globalThis.MarinaraMessageCleanupCore;
   let modalRoot = null;
   let modalCleanup = null;
+
+  if (!importRequestCore || !messageCleanupCore) {
+    hostMarinara.log.error("Chat Import support modules are unavailable");
+    return;
+  }
 
   class ImportValidationError extends Error {
     constructor(message) {
       super(message);
       this.name = "ImportValidationError";
+    }
+  }
+
+  class MarinaraApiError extends Error {
+    constructor(message, status, retryAfterMs) {
+      super(message);
+      this.name = "MarinaraApiError";
+      this.status = status;
+      this.retryAfterMs = retryAfterMs;
     }
   }
 
@@ -93,6 +111,26 @@
     return messages;
   }
 
+  function normalizeJsonMessage(value, itemLabel, sourceIndex, options = {}) {
+    const item = parseRecord(value);
+    if (!item) fail(`${itemLabel}가 객체가 아닙니다.`);
+    if (typeof item.content !== "string" || item.content.trim() === "") {
+      fail(`${itemLabel}에 content 값이 없습니다.`);
+    }
+    const name = validateOptionalString(item.name, "name", itemLabel);
+    const timestamp = validateTimestamp(item.timestamp, itemLabel);
+    const role = options.allowSystem === true && String(item.role || "").trim().toLowerCase() === "system"
+      ? "system"
+      : normalizeRole(item.role, itemLabel);
+    return {
+      role,
+      content: item.content,
+      ...(name ? { name } : {}),
+      ...(timestamp ? { timestamp } : {}),
+      sourceIndex,
+    };
+  }
+
   function parseJson(text) {
     let payload;
     try {
@@ -102,24 +140,36 @@
     }
     const root = parseRecord(payload);
     if (!root || !Array.isArray(root.messages)) fail("JSON 최상위 객체에 messages 배열이 필요합니다.");
-    const messages = root.messages.map((value, index) => {
-      const itemLabel = `${index + 1}번째 메시지`;
-      const item = parseRecord(value);
-      if (!item) fail(`${itemLabel}가 객체가 아닙니다.`);
-      if (typeof item.content !== "string" || item.content.trim() === "") {
-        fail(`${itemLabel}에 content 값이 없습니다.`);
-      }
-      const name = validateOptionalString(item.name, "name", itemLabel);
-      const timestamp = validateTimestamp(item.timestamp, itemLabel);
-      return {
-        role: normalizeRole(item.role, itemLabel),
-        content: item.content,
-        ...(name ? { name } : {}),
-        ...(timestamp ? { timestamp } : {}),
-        sourceIndex: index + 1,
-      };
-    });
+    const messages = root.messages.map((value, index) =>
+      normalizeJsonMessage(value, `${index + 1}번째 메시지`, index + 1));
     return finalizeMessages(messages);
+  }
+
+  function summarizeJsonlIssues(issues) {
+    const shown = issues.slice(0, MAX_JSONL_ISSUES_SHOWN).map((issue) => issue.message);
+    if (issues.length > shown.length) shown.push(`그 외 ${issues.length - shown.length}개 행의 오류는 표시를 생략했습니다.`);
+    return shown.join("\n");
+  }
+
+  function parseJsonl(text) {
+    if (!globalThis.MarinaraTranscriptJsonl?.parseJsonl) fail("JSONL 파서가 로드되지 않았습니다.");
+    const parsed = globalThis.MarinaraTranscriptJsonl.parseJsonl(text);
+    const issues = [...parsed.issues];
+    const messages = [];
+    for (const candidate of parsed.candidates) {
+      try {
+        messages.push(normalizeJsonMessage(candidate.value, candidate.itemLabel, candidate.lineNumber, { allowSystem: true }));
+      } catch (error) {
+        if (!(error instanceof ImportValidationError)) throw error;
+        issues.push({ lineNumber: candidate.lineNumber, message: error.message });
+      }
+    }
+    issues.sort((left, right) => left.lineNumber - right.lineNumber);
+    if (messages.length === 0) {
+      const detail = summarizeJsonlIssues(issues);
+      fail(`가져올 수 있는 JSONL 메시지가 없습니다.${detail ? `\n${detail}` : ""}`);
+    }
+    return { messages: finalizeMessages(messages), cleanupCandidates: [], issues };
   }
 
 
@@ -212,16 +262,6 @@
       if (!disabledCleanupIds.has(id)) lines[index] = "";
     }
     return { text: lines.join("\n"), candidates };
-  }
-
-  function isMeaninglessTxtMessage(content) {
-    const value = String(content || "").trim();
-    if (!value) return true;
-    if (/^`{3,}\s*$/.test(value)) return true;
-    if (/^\.\s*$/.test(value)) return true;
-    if (/^\.\s*\([^)]*(?:\d{4}[-./]\d{1,2}[-./]\d{1,2}|\d{1,2}:\d{2})[^)]*\)\s*$/.test(value)) return true;
-    if (/^\(?\s*\d{4}[-./]\s*\d{1,2}[-./]\s*\d{1,2}(?:\s+(?:오전|오후|AM|PM)?\s*\d{1,2}:\d{2}(?::\d{2})?)?\s*\)?$/i.test(value)) return true;
-    return false;
   }
 
   function extractStatusReplacement(block, mode) {
@@ -351,29 +391,7 @@
     return result;
   }
 
-  function isUserControlOnlyMessage(content) {
-    const value = String(content || "").trim();
-    if (!value) return false;
-
-    // Continuation / proceed-only prompts commonly used as control input.
-    if (/^(?:이어서|이어\s*서\s*진행|이어서\s*(?:계속|진행|진행해|진행해줘|써줘|작성해줘)|계속|계속\s*(?:진행|진행해|진행해줘)|다음|계속해|계속해줘|이어줘|이어\s*가|이어가|진행해|진행해줘)[.!?…~\s]*$/i.test(value)) {
-      return true;
-    }
-
-    // [command] / [명령어: ...] / arbitrary bracket command, but not multiline prose.
-    if (/^\[[^\]\r\n]{1,200}\]$/.test(value)) return true;
-
-    // !command / !명령어 arguments — one control line only.
-    if (/^![^\s!][^\r\n]*$/.test(value)) return true;
-
-    // OOC wrappers used purely as control messages.
-    if (/^\[\s*OOC\s*:[\s\S]*\]$/i.test(value)) return true;
-    if (/^<\s*OOC\s*>[\s\S]*<\s*\/\s*OOC\s*>$/i.test(value)) return true;
-
-    return false;
-  }
-
-  function sanitizeTxtMessages(messages, options = {}) {
+  function sanitizeMessageBodies(messages, options = {}) {
     const candidates = [];
     const disabledCleanupIds = options.disabledCleanupIds || new Set();
     const result = [];
@@ -423,7 +441,7 @@
       if (
         message.role === "user" &&
         options.removeUserControlMessages !== false &&
-        isUserControlOnlyMessage(content)
+        messageCleanupCore.isUserControlOnlyMessage(content)
       ) {
         candidates.push({
           id: userControlId,
@@ -436,7 +454,7 @@
       }
 
       const meaninglessId = cleanupId("meaningless", message.sourceIndex);
-      if (options.removeMeaningless !== false && isMeaninglessTxtMessage(content)) {
+      if (options.removeMeaningless !== false && messageCleanupCore.isMeaninglessMessage(content)) {
         candidates.push({
           id: meaninglessId,
           type: "meaningless",
@@ -584,16 +602,29 @@
       ? { text: String(text || ""), candidates: [] }
       : detectLeadingTxtMetadata(text, disabledCleanupIds);
     const parsed = parseTxtCore(metadata.text, options);
-    const sanitized = sanitizeTxtMessages(parsed, { ...options, disabledCleanupIds });
+    const sanitized = sanitizeMessageBodies(parsed, { ...options, disabledCleanupIds });
     const messages = finalizeMessages(sanitized.messages);
     return { messages, cleanupCandidates: [...metadata.candidates, ...sanitized.candidates] };
+  }
+
+  function maybeSanitizeStructured(result, options = {}) {
+    if (options.cleanStructuredMessages !== true) return result;
+    const sanitized = sanitizeMessageBodies(result.messages, options);
+    return {
+      ...result,
+      messages: finalizeMessages(sanitized.messages),
+      cleanupCandidates: sanitized.candidates,
+    };
   }
 
   async function parseFile(file, options = {}) {
     if (!file) fail("파일을 선택하세요.");
     if (file.size > MAX_FILE_BYTES) fail("파일은 20MB 이하여야 합니다.");
     const lowerName = file.name.toLowerCase();
-    if (lowerName.endsWith(".json")) return { messages: parseJson(await file.text()), cleanupCandidates: [] };
+    if (lowerName.endsWith(".json")) {
+      return maybeSanitizeStructured({ messages: parseJson(await file.text()), cleanupCandidates: [] }, options);
+    }
+    if (lowerName.endsWith(".jsonl")) return maybeSanitizeStructured(parseJsonl(await file.text()), options);
     if (lowerName.endsWith(".txt")) return parseTxt(await file.text(), options);
     if (lowerName.endsWith(".xlsx")) {
       if (!globalThis.MarinaraTranscriptXlsx?.parseXlsx) fail("Excel 파서가 로드되지 않았습니다.");
@@ -608,7 +639,7 @@
         cleanupCandidates: [],
       };
     }
-    fail("지원하지 않는 파일입니다. .xlsx, .json 또는 .txt 파일을 선택하세요.");
+    fail("지원하지 않는 파일입니다. .xlsx, .json, .jsonl 또는 .txt 파일을 선택하세요.");
   }
 
   function normalizedMessageTimestamps(messages) {
@@ -646,7 +677,8 @@
         payload && typeof payload === "object" && typeof payload.error === "string"
           ? payload.error
           : `Marinara API 요청이 실패했습니다 (${response.status}).`;
-      throw new Error(message);
+      const retryAfterMs = importRequestCore.parseRetryAfter(response.headers?.get?.("Retry-After"));
+      throw new MarinaraApiError(message, response.status, retryAfterMs);
     }
     return payload;
   }
@@ -765,7 +797,7 @@
     const header = createElement("header", { className: "cti-header" });
     const headingGroup = createElement("div", { className: "cti-heading-group" });
     const title = createElement("h2", { id: "cti-title", text: "대화 기록 가져오기" });
-    const subtitle = createElement("p", { text: "Excel, JSON 또는 TXT 대화 기록을 실제 Marinara 메시지로 저장합니다." });
+    const subtitle = createElement("p", { text: "Excel, JSON, JSONL 또는 TXT 대화 기록을 실제 Marinara 메시지로 저장합니다." });
     headingGroup.append(title, subtitle);
     const closeButton = createElement("button", {
       className: "cti-icon-button",
@@ -830,7 +862,7 @@
 
     const fileInput = createElement("input");
     fileInput.type = "file";
-    fileInput.accept = ".xlsx,.json,.txt";
+    fileInput.accept = ".xlsx,.json,.jsonl,.txt";
     fileInput.className = "cti-file-input";
     fileInput.id = "cti-file";
     const dropzone = createElement("label", { className: "cti-dropzone", htmlFor: "cti-file" });
@@ -838,7 +870,7 @@
     dropIcon.appendChild(importIcon());
     const dropCopy = createElement("span", { className: "cti-drop-copy" });
     const fileTitle = createElement("strong", { text: "파일 선택" });
-    const fileHint = createElement("small", { text: ".xlsx, .json 또는 .txt, 최대 20MB" });
+    const fileHint = createElement("small", { text: ".xlsx, .json, .jsonl 또는 .txt, 최대 20MB" });
     dropCopy.append(fileTitle, fileHint);
     dropzone.append(dropIcon, dropCopy, fileInput);
     form.appendChild(dropzone);
@@ -860,6 +892,8 @@
       return { label, input };
     };
     const metadataToggle = makeToggle("서비스/내보내기 메타데이터 제거", true);
+    const structuredCleanupToggle = makeToggle("본문 정리 사용", false);
+    structuredCleanupToggle.label.hidden = true;
     const meaninglessToggle = makeToggle("빈 메시지/플레이스홀더 제거", true);
     const imageMarkerToggle = makeToggle("이미지 호출/임베드 제거", true);
     const userControlToggle = makeToggle("유저 명령/OOC 전용 메시지 제거", true);
@@ -889,7 +923,7 @@
       makeField("상태창 처리", statusModeSelect, "상태창이 실제 대사/지문과 같은 메시지에 있어도 상태창 부분만 정리합니다."),
       reviewBox,
     );
-    form.appendChild(txtOptions);
+    form.append(structuredCleanupToggle.label, txtOptions);
 
     const status = createElement("div", { className: "cti-status", role: "status" });
     status.hidden = true;
@@ -985,7 +1019,7 @@
         reviewList.append(
           createElement("div", {
             className: "cti-cleanup-empty",
-            text: state.file ? "현재 설정에서 정리할 항목이 없습니다." : "TXT를 선택하면 제거·변환 예정 항목을 여기에 표시합니다.",
+            text: state.file ? "현재 설정에서 정리할 항목이 없습니다." : "파일을 선택하면 제거·변환 예정 항목을 여기에 표시합니다.",
           }),
         );
         return;
@@ -1022,8 +1056,15 @@
       state.cleanupCandidates = [];
       importButton.disabled = true;
       fileTitle.textContent = file?.name || "파일 선택";
-      fileHint.textContent = file ? "읽는 중…" : ".xlsx, .json 또는 .txt, 최대 20MB";
-      txtOptions.hidden = !file?.name?.toLowerCase().endsWith(".txt");
+      fileHint.textContent = file ? "읽는 중…" : ".xlsx, .json, .jsonl 또는 .txt, 최대 20MB";
+      const lowerName = file?.name?.toLowerCase() || "";
+      const isTxt = lowerName.endsWith(".txt");
+      const isStructuredText = lowerName.endsWith(".json") || lowerName.endsWith(".jsonl");
+      structuredCleanupToggle.label.hidden = !isStructuredText;
+      txtOptions.hidden = !(isTxt || (isStructuredText && structuredCleanupToggle.input.checked));
+      txtFirstRoleSelect.closest(".cti-field").hidden = !isTxt;
+      metadataToggle.label.hidden = !isTxt;
+      cleanupTitle.textContent = isTxt ? "TXT 정리" : "메시지 본문 정리";
       try {
         const result = await parseFile(file, {
           firstImplicitRole: txtFirstRoleSelect.value,
@@ -1031,7 +1072,8 @@
           removeMeaningless: meaninglessToggle.input.checked,
           removeImageMarkers: imageMarkerToggle.input.checked,
           removeUserControlMessages: userControlToggle.input.checked,
-          characterName: characterSelect.selectedOptions[0]?.textContent || "",
+          cleanStructuredMessages: structuredCleanupToggle.input.checked,
+          characterName: characterSelect.value ? characterSelect.selectedOptions[0]?.textContent || "" : "",
           userName: personaSelect.value ? (personaSelect.selectedOptions[0]?.textContent || "") : "",
           statusMode: statusModeSelect.value,
           disabledCleanupIds: state.disabledCleanupIds,
@@ -1042,14 +1084,20 @@
         fileHint.textContent = `${messages.length.toLocaleString()}개 메시지를 확인했습니다.`;
         if (chatNameInput.dataset.edited !== "true") {
           chatNameInput.value = file.name
-            .replace(/\.(xlsx|json|txt)$/i, "")
+            .replace(/\.(xlsx|jsonl?|txt)$/i, "")
             .replaceAll("_", " ")
             .trim();
         }
         renderPreview();
         renderCleanupReview();
+        if (result.issues?.length) {
+          showStatus(
+            "warning",
+            `${result.issues.length.toLocaleString()}개 JSONL 항목을 제외했습니다.\n${summarizeJsonlIssues(result.issues)}`,
+          );
+        }
       } catch (error) {
-        fileHint.textContent = ".xlsx, .json 또는 .txt, 최대 20MB";
+        fileHint.textContent = ".xlsx, .json, .jsonl 또는 .txt, 최대 20MB";
         previewCount.textContent = "파일을 읽지 못했습니다";
         previewList.textContent = "";
         previewList.appendChild(
@@ -1079,17 +1127,24 @@
     selectAssistantButton.addEventListener("click", () => applyMessageSelection((message) => message.role === "assistant"));
 
     fileInput.addEventListener("change", () => void handleFile(fileInput.files?.[0], { resetDecisions: true }));
-    const refreshTxt = () => {
-      if (state.file?.name?.toLowerCase().endsWith(".txt")) void handleFile(state.file, { resetDecisions: false });
+    const refreshCleanup = () => {
+      const lowerName = state.file?.name?.toLowerCase() || "";
+      const isTxt = lowerName.endsWith(".txt");
+      const isEnabledStructured =
+        (lowerName.endsWith(".json") || lowerName.endsWith(".jsonl")) && structuredCleanupToggle.input.checked;
+      if (isTxt || isEnabledStructured) void handleFile(state.file, { resetDecisions: false });
     };
-    txtFirstRoleSelect.addEventListener("change", refreshTxt);
-    metadataToggle.input.addEventListener("change", refreshTxt);
-    meaninglessToggle.input.addEventListener("change", refreshTxt);
-    imageMarkerToggle.input.addEventListener("change", refreshTxt);
-    userControlToggle.input.addEventListener("change", refreshTxt);
+    structuredCleanupToggle.input.addEventListener("change", () => {
+      if (state.file) void handleFile(state.file, { resetDecisions: false });
+    });
+    txtFirstRoleSelect.addEventListener("change", refreshCleanup);
+    metadataToggle.input.addEventListener("change", refreshCleanup);
+    meaninglessToggle.input.addEventListener("change", refreshCleanup);
+    imageMarkerToggle.input.addEventListener("change", refreshCleanup);
+    userControlToggle.input.addEventListener("change", refreshCleanup);
     statusModeSelect.addEventListener("change", () => {
       state.disabledCleanupIds = new Set([...state.disabledCleanupIds].filter((id) => !id.startsWith("status:")));
-      refreshTxt();
+      refreshCleanup();
     });
     for (const eventName of ["dragenter", "dragover"]) {
       dropzone.addEventListener(eventName, (event) => {
@@ -1106,9 +1161,9 @@
     dropzone.addEventListener("drop", (event) => void handleFile(event.dataTransfer?.files?.[0], { resetDecisions: true }));
     characterSelect.addEventListener("change", () => {
       updateImportAvailability();
-      refreshTxt();
+      refreshCleanup();
     });
-    personaSelect.addEventListener("change", refreshTxt);
+    personaSelect.addEventListener("change", refreshCleanup);
 
     importButton.addEventListener("click", async () => {
       const messagesToImport = selectedMessages();
@@ -1118,44 +1173,60 @@
       updateImportAvailability();
       importButton.textContent = "채팅 생성 중…";
       const timestamps = normalizedMessageTimestamps(messagesToImport);
+      const selectedCharacterId = characterSelect.value || null;
       let createdChatId = null;
+      const requestScheduler = importRequestCore.createRequestScheduler({
+        request: apiRequest,
+        minIntervalMs:
+          messagesToImport.length >= BULK_IMPORT_THROTTLE_THRESHOLD ? importRequestCore.DEFAULT_MIN_INTERVAL_MS : 0,
+      });
+      const requestWithRetry = (path, options, label) =>
+        requestScheduler.run(path, options, {
+          onRetry: ({ delayMs }) => {
+            importButton.textContent = `${label} · 요청 제한으로 ${Math.max(1, Math.ceil(delayMs / 1_000))}초 대기 중…`;
+          },
+        });
       try {
-        if (characterSelect.value) {
-          await apiRequest(`/api/characters/${encodeURIComponent(characterSelect.value)}`);
+        if (selectedCharacterId) {
+          await requestWithRetry(`/api/characters/${encodeURIComponent(selectedCharacterId)}`, undefined, "캐릭터 확인 중");
         }
         if (personaSelect.value) {
-          await apiRequest(`/api/characters/personas/${encodeURIComponent(personaSelect.value)}`);
+          await requestWithRetry(
+            `/api/characters/personas/${encodeURIComponent(personaSelect.value)}`,
+            undefined,
+            "페르소나 확인 중",
+          );
         }
         const chatName =
           chatNameInput.value.trim() ||
-          (characterSelect.value
+          (selectedCharacterId
             ? `${characterSelect.selectedOptions[0]?.textContent || "캐릭터"} 가져온 대화`
             : "가져온 대화");
-        const chat = await apiRequest("/api/chats", {
+        const chat = await requestWithRetry("/api/chats", {
           method: "POST",
           body: {
             name: chatName,
             mode: modeSelect.value,
-            characterIds: characterSelect.value ? [characterSelect.value] : [],
+            characterIds: selectedCharacterId ? [selectedCharacterId] : [],
             personaId: personaSelect.value || null,
             createdAt: timestamps[0],
             updatedAt: timestamps.at(-1),
           },
-        });
+        }, "채팅 생성 중");
         if (!chat?.id) throw new Error("생성된 채팅 ID를 받지 못했습니다.");
         createdChatId = chat.id;
         for (let index = 0; index < messagesToImport.length; index += 1) {
           const message = messagesToImport[index];
           importButton.textContent = `메시지 저장 중 ${index + 1} / ${messagesToImport.length}`;
-          await apiRequest(`/api/chats/${encodeURIComponent(createdChatId)}/messages`, {
+          await requestWithRetry(`/api/chats/${encodeURIComponent(createdChatId)}/messages`, {
             method: "POST",
             body: {
               role: message.role,
-              characterId: message.role === "assistant" && characterSelect.value ? characterSelect.value : null,
+              characterId: message.role === "assistant" ? selectedCharacterId : null,
               content: message.content,
               createdAt: timestamps[index],
             },
-          });
+          }, `메시지 저장 중 ${index + 1} / ${messagesToImport.length}`);
         }
         showStatus(
           "success",
@@ -1169,7 +1240,12 @@
         let rollbackMessage = "";
         if (createdChatId) {
           try {
-            await apiRequest(`/api/chats/${encodeURIComponent(createdChatId)}`, { method: "DELETE" });
+            importButton.textContent = "불완전한 채팅 정리 중…";
+            await requestWithRetry(
+              `/api/chats/${encodeURIComponent(createdChatId)}`,
+              { method: "DELETE" },
+              "불완전한 채팅 정리 대기 중",
+            );
             rollbackMessage = " 생성된 불완전한 채팅은 삭제했습니다.";
           } catch (rollbackError) {
             rollbackMessage = ` 불완전한 채팅(${createdChatId})을 자동 삭제하지 못했습니다: ${
