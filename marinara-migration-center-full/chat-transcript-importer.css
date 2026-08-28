@@ -299,6 +299,13 @@
   color: var(--foreground);
   font-size: 0.75rem;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.cti-status[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--border));
+  background: color-mix(in srgb, var(--primary) 6%, var(--card));
 }
 
 .cti-status[data-tone="error"] {

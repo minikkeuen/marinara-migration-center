@@ -2,7 +2,7 @@
 
 Marinara Engine용 채팅 기록 Import 확장 프로그램입니다.
 
-TXT, Excel (`.xlsx`), JSON 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
+TXT, Excel (`.xlsx`), JSON, JSONL 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
 
 **Version 1.0.1**
 
@@ -10,7 +10,7 @@ API/schema 기준 확인: Marinara Engine 2.4.4 소스. Character-Lorebook 연�
 
 ## 주요 기능
 
-- TXT / XLSX / JSON 채팅 Import
+- TXT / XLSX / JSON / JSONL 채팅 Import
 - TXT 화자 및 턴 형식 자동 인식
 - User / Assistant 역할 판정
 - 원본 날짜 및 시간 보존
@@ -75,7 +75,7 @@ Marinara connections API에서 모델이 설정된 텍스트 생성 Connection�
 
 Prompt Conversion의 마지막 작업 1개는 확장 전용 working session으로 자동 저장됩니다. Original/Separated 입력, 변환 모드와 AI 설정, Connection 선택, 대화 참조 설정과 선택 ID, 대화 분석 기반 프롬프트, AI draft, Review 수정 및 제외 상태를 복원합니다. 로어북 병합 분석을 마친 경우 선택 로어북, 분석 지문, 항목별 action·매칭 ID·제안 사유·경고·최종 편집값도 함께 복원합니다. 다시 불러온 대상 로어북이나 초안이 저장 당시와 다르면 기존 병합 결과를 stale 처리하고 재분석을 요구합니다. 입력 변경은 600ms debounce 후 저장하며 창을 닫을 때 남은 변경을 한 번 더 저장합니다. `작업 초기화`는 이 session만 지우고 AI Settings, Saved Draft, 실제 Marinara 자산에는 영향을 주지 않습니다. 자동저장 데이터가 약 900KB 예산을 넘으면 기존 working session을 덮어쓰지 않고 UI에 오류를 표시합니다.
 
-**Saved Drafts**는 자동저장과 분리된 명시적 보관본입니다. `Draft 저장`으로 현재 snapshot을 새로 보관하고, 열어 둔 저장본은 `Draft 업데이트`를 눌러야 변경됩니다. 저장 개수와 만료 기한은 두지 않으며 사용자가 직접 열기, 이름 변경, 삭제를 실행합니다. 작업소의 목록은 기본적으로 닫혀 있습니다. 다른 Draft 열기, 새 분석, 작업 초기화처럼 현재 내용을 교체하는 동작은 미저장 변경이 있으면 저장·버리기·취소를 선택하게 합니다. Imported conversation 원문은 보관본마다 중복 저장하지 않습니다.
+**Saved Drafts**는 자동저장과 분리된 명시적 보관본입니다. `Draft 저장`으로 현재 snapshot을 새로 보관하고, 열어 둔 저장본은 `Draft 업데이트`를 눌러야 변경됩니다. 저장된 초안이 10개 이상일 때 새 Draft를 저장하면 정리를 권장하지만, 저장 개수를 제한하거나 기존 Draft를 자동 삭제하지 않습니다. 기존 Draft 업데이트에는 이 안내를 표시하지 않습니다. 사용자가 직접 열기, 이름 변경, 삭제를 실행하며 작업소의 목록은 기본적으로 닫혀 있습니다. 다른 Draft 열기, 새 분석, 작업 초기화처럼 현재 내용을 교체하는 동작은 미저장 변경이 있으면 저장·버리기·취소를 선택하게 합니다. Imported conversation 원문은 보관본마다 중복 저장하지 않습니다.
 
 상단 **작업소**에서는 마지막 working session의 AI draft와 Review 수정 상태를 다시 열고 Saved Draft 목록을 관리합니다. 현재 분석 결과가 없으면 빈 상태와 프롬프트 이식 이동 버튼을 표시합니다. Saved Draft와 실제 Character/Lorebook 자산은 서로 다른 데이터입니다.
 
@@ -120,6 +120,19 @@ Character와 Character Lorebook 연결은 공식 `POST /api/characters/:id/embed
 ```
 
 명시적인 역할 표시가 없는 TXT는 Import 화면의 역할 설정을 기준으로 User와 Assistant를 구분합니다.
+
+## JSONL Import
+
+JSONL은 빈 줄을 제외하고 한 줄씩 독립된 JSON 객체로 읽습니다. 직접 `role` / `content`를 가진 메시지 외에도 `sender` / `text`, 중첩 `message`, `messages`, `conversation`, `conversations`, `turns` 배열과 일반적인 user/assistant 쌍을 인식합니다. 변환된 메시지는 JSON Import와 동일한 role, content, name, timestamp 검증을 거친 뒤 기존 미리보기와 저장 흐름을 사용합니다.
+
+첫 객체가 `user_name`, `character_name` 또는 `chat_metadata`를 포함하고 `mes`가 없으면 대화 메타데이터로 인식해 메시지에서 제외합니다. 이후 내부 메시지 행은 `mes`를 본문으로 사용하고, 명시된 `role`을 우선하며 없을 때 `is_system`과 `is_user`로 역할을 판정합니다. `send_date: null`은 기존 timestamp fallback에 맡깁니다. 현재 Import 저장 흐름은 swipe 생성을 지원하지 않으므로 `swipes`와 `swipe_id`는 Import를 막지 않고 건너뛰며 `mes`를 그대로 저장합니다.
+
+일부 행의 JSON 문법이나 메시지 필드가 잘못되어도 유효한 행은 계속 불러옵니다. 제외된 행 수와 행 번호별 원인은 Import 화면의 경고에 표시합니다.
+
+JSON/JSONL의 **본문 정리 사용**은 기본적으로 꺼져 있습니다. 켜면 TXT와 같은 공통 본문 정리 단계에서 상태창, 이미지 호출·임베드, 내부 HTML 주석, 메시지 끝 날짜/시간, User OOC·명령어 전용 메시지와 거의 빈 메시지를 감지합니다. 감지 결과는 기존 정리 항목 검토에서 개별적으로 보존할 수 있습니다. JSON/JSONL 구조 자체와 부가 필드는 이 옵션으로 변경하지 않습니다.
+
+JSON 문자열 디코딩 뒤에도 명령어나 빈 잔여물을 감싼 바깥 따옴표가 남을 수 있습니다. 정리 판정은 균형 잡힌 직선·스마트·CJK 따옴표와 escape된 바깥 따옴표를 판정용 값에서만 해제합니다. 사용자가 정리 항목을 보존하면 실제 메시지의 따옴표와 본문은 수정하지 않습니다.
+`"📍내용"`처럼 전체 상태창 줄이 따옴표로 감싸진 경우도 같은 방식으로 상태창으로 감지합니다.
 
 ## TXT 정리
 
@@ -204,12 +217,18 @@ Import 전에 파싱된 메시지를 미리 확인할 수 있습니다.
 
 ## 제한사항
 
-- 지원 형식: `.txt`, `.xlsx`, `.json`
+- 지원 형식: `.txt`, `.xlsx`, `.json`, `.jsonl`
 - 최대 파일 크기: 20MB
 - 최대 메시지 수: 10,000개
 - 대량 Import는 Marinara의 공개 단건 메시지 API를 순차 사용하되 요청 속도를 자동 조절합니다. API가 `429 Too many requests`와 `Retry-After`를 반환하면 해당 메시지부터 제한된 횟수만큼 대기 후 재시도하며, 실패한 채팅의 정리 요청도 같은 대기 규칙을 따릅니다.
 - Import 후 Chats 목록에 새 채팅이 바로 표시되지 않으면 페이지를 새로고침하세요.
 - 특수한 TXT 형식은 Import 전에 미리보기와 정리 결과를 확인하는 것을 권장합니다.
+
+## 개발용 대량 Import fixture
+
+`fixtures/generate-bulk-import-fixtures.mjs`는 기존 JSON Import가 받는 `{ "messages": [...] }` 형식으로 500, 1200, 3000개 메시지 fixture를 생성합니다. 각 메시지는 `[TEST-000001]`부터 연속 번호를 가지며 user와 assistant가 교대로 배치됩니다. `fixtures/verify-bulk-import-fixtures.mjs`는 첫 번호, 마지막 번호, 총 개수, 연속성, 중복과 역할 순서를 검증합니다.
+
+`fixtures/run-live-bulk-import.mjs`는 개발용 Marinara 서버에 공식 Chat API로 fixture를 저장한 뒤 message-count와 전체 메시지를 다시 읽어 같은 조건을 검증합니다. 기본적으로 검증한 테스트 Chat은 삭제합니다. `--prime-rate-limit`을 지정하면 실제 서버의 default rate-limit을 먼저 소진해 `Retry-After` 재시도도 검증합니다. 이 디렉터리는 배포 ZIP에 포함하지 않습니다.
 
 ## Privacy
 

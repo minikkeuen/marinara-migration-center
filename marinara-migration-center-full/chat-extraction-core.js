@@ -317,6 +317,18 @@
     return groups;
   }
 
+  async function extractChunksInOrder(chunksValue, extractChunk, onChunkStart) {
+    const chunks = Array.isArray(chunksValue) ? chunksValue : [];
+    if (typeof extractChunk !== "function") throw new TypeError("extractChunk 함수가 필요합니다.");
+    const results = [];
+    for (const [index, chunk] of chunks.entries()) {
+      onChunkStart?.({ chunk, index, chunkNumber: index + 1, totalChunks: chunks.length });
+      const extracted = await extractChunk(chunk, index, chunks.length);
+      results.push({ chunkIndex: index + 1, ...extracted });
+    }
+    return results;
+  }
+
   function stripFence(value) {
     const text = String(value ?? "").trim().replace(/^\uFEFF/, "");
     const fenced = text.match(/^\`\`\`(?:json)?\s*([\s\S]*?)\s*\`\`\`$/i);
@@ -390,6 +402,7 @@
     calculateRecommendation,
     chunkTurns,
     estimateTokens,
+    extractChunksInOrder,
     formatTurn,
     groupMessagesIntoTurns,
     availableChatLabel,

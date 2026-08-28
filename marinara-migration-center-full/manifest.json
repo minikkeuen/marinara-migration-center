@@ -11,6 +11,8 @@
     ],
     "jsPath": [
       "xlsx-parser.js",
+      "jsonl-parser.js",
+      "message-cleanup-core.js",
       "chat-import-request-core.js",
       "chat-transcript-importer.js",
       "prompts/prompt-conversion-prompts.js",

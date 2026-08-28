@@ -7,11 +7,13 @@
   const mergeCore = globalThis.MarinaraLorebookMergeCore;
   const assetCore = globalThis.MarinaraAssetSaveCore;
   const repairPrompts = globalThis.MarinaraJsonRepairPrompts;
+  const requestRetryCore = globalThis.MarinaraChatImportRequestCore;
   const SETTINGS_STORAGE_KEY = "promptConverterSettings";
   const SESSION_STORAGE_KEY = "promptConverterDraftSession";
   const SAVED_DRAFTS_STORAGE_KEY = "promptConverterSavedDrafts";
   const SESSION_SCHEMA_VERSION = 1;
   const SAVED_DRAFT_SCHEMA_VERSION = 1;
+  const SAVED_DRAFT_CLEANUP_THRESHOLD = 10;
   const SESSION_SAVE_DEBOUNCE_MS = 600;
   const SESSION_STORAGE_BUDGET_BYTES = 900_000;
   const NON_TEXT_PROVIDERS = new Set(["image_generation", "video_generation", "audio"]);
@@ -20,7 +22,7 @@
   let modalRoot = null;
   let modalCleanup = null;
 
-  if (!core || !chatCore || !mergeCore || !assetCore || !repairPrompts) {
+  if (!core || !chatCore || !mergeCore || !assetCore || !repairPrompts || !requestRetryCore) {
     hostMarinara.log.error("Prompt Converter core modules are unavailable");
     return;
   }
@@ -296,7 +298,10 @@
         payload && typeof payload === "object" && typeof payload.error === "string"
           ? payload.error
           : `Marinara API 요청이 실패했습니다 (${response.status}).`;
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      error.retryAfterMs = requestRetryCore.parseRetryAfter(response.headers?.get?.("Retry-After"));
+      throw error;
     }
     return payload;
   }
@@ -529,6 +534,10 @@
       state.status = status;
       state.statusMessage = message;
     };
+    const generationRequestScheduler = requestRetryCore.createRequestScheduler({
+      request: apiRequest,
+      minIntervalMs: 0,
+    });
 
     let sessionSaveTimer = null;
     let lastSavedSession = restoredSession ? JSON.stringify(restoredSession) : JSON.stringify(null);
@@ -677,6 +686,72 @@
       state.savedDrafts = cloneJson(cachedSavedDrafts);
     };
 
+    let savedDraftCleanupDialog = null;
+    const closeSavedDraftCleanupDialog = (proceed) => {
+      if (!savedDraftCleanupDialog) return;
+      const { element, resolve, previousFocus } = savedDraftCleanupDialog;
+      savedDraftCleanupDialog = null;
+      element.remove();
+      if (
+        !proceed &&
+        previousFocus instanceof HTMLElement &&
+        previousFocus.isConnected
+      )
+        previousFocus.focus();
+      resolve(proceed);
+    };
+
+    const confirmSavedDraftCleanup = () => {
+      if (savedDraftCleanupDialog) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        const overlay = createElement("div", {
+          className: "pc-replace-overlay",
+        });
+        const panel = createElement("section", {
+          className: "pc-replace-dialog",
+          role: "alertdialog",
+        });
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("aria-labelledby", "pc-saved-draft-cleanup-title");
+        panel.setAttribute("aria-describedby", "pc-saved-draft-cleanup-copy");
+        panel.append(
+          createElement("h3", { id: "pc-saved-draft-cleanup-title", text: "저장된 초안 정리 권장" }),
+          createElement("p", {
+            id: "pc-saved-draft-cleanup-copy",
+            text: "저장된 초안이 많습니다. 필요 없는 초안을 정리하는 것을 권장합니다.",
+          }),
+        );
+        const actions = createElement("div", { className: "pc-replace-actions" });
+        const cancel = createElement("button", {
+          className: "pc-button pc-button-secondary",
+          type: "button",
+          text: "취소",
+        });
+        const proceed = createElement("button", {
+          className: "pc-button pc-button-primary",
+          type: "button",
+          text: "계속 저장",
+        });
+        cancel.addEventListener("click", () => closeSavedDraftCleanupDialog(false));
+        proceed.addEventListener("click", () =>
+          closeSavedDraftCleanupDialog(true),
+        );
+        actions.append(cancel, proceed);
+        panel.append(actions);
+        overlay.append(panel);
+        root.append(overlay);
+        savedDraftCleanupDialog = {
+          element: overlay,
+          resolve,
+          previousFocus:
+            document.activeElement instanceof HTMLElement
+              ? document.activeElement
+              : null,
+        };
+        proceed.focus();
+      });
+    };
+
     const saveCurrentDraft = async ({ updateExisting = false } = {}) => {
       if (state.savedDraftBusy || isWorking()) return false;
       const snapshot = buildSavedDraftSnapshot();
@@ -686,8 +761,17 @@
         return false;
       }
       const existing = updateExisting
-        ? state.savedDrafts.find((draft) => draft.id === state.activeSavedDraftId)
+        ? state.savedDrafts.find(
+            (draft) => draft.id === state.activeSavedDraftId,
+          )
         : null;
+      if (
+        !existing &&
+        state.savedDrafts.length >= SAVED_DRAFT_CLEANUP_THRESHOLD &&
+        !(await confirmSavedDraftCleanup())
+      ) {
+        return false;
+      }
       const name = existing?.name || promptSavedDraftName();
       if (!name) return false;
       const now = new Date().toISOString();
@@ -1054,7 +1138,7 @@
         : null;
       const parameters = core.buildGenerationParameters(state.settings);
       try {
-        return await apiRequest("/api/generate/raw", {
+        return await generationRequestScheduler.run("/api/generate/raw", {
           method: "POST",
           signal: controller.signal,
           body: {
@@ -1063,6 +1147,11 @@
             ...(parameters ? { parameters } : {}),
             streaming: false,
             runId,
+          },
+        }, {
+          onRetry: ({ delayMs, attempt }) => {
+            state.statusMessage = `요청 제한으로 ${Math.max(1, Math.ceil(delayMs / 1_000))}초 대기 후 재시도합니다 (${attempt}/${requestRetryCore.DEFAULT_MAX_RETRIES}).`;
+            render();
           },
         });
       } catch (error) {
@@ -1687,12 +1776,10 @@
       state.activeRequest = requestNumber;
       state.abortRequested = false;
       state.chatAnalysisWarnings = [];
-      const extractionResults = [];
       try {
-        for (const [index, chunk] of plan.chunks.entries()) {
-          updateStatus("extracting_chat", `대화 구간 ${index + 1}/${plan.chunks.length}에서 재사용 가능한 정보를 추출하고 있습니다.`);
-          render();
-          const extracted = await generateValidatedChatJson(
+        const extractionResults = await chatCore.extractChunksInOrder(
+          plan.chunks,
+          (chunk, index) => generateValidatedChatJson(
             chatCore.buildExtractionMessages({
               originalPrompt: originalPromptText(),
               chunk: chunk.text,
@@ -1702,9 +1789,12 @@
             chatCore.parseExtractionResponse,
             "대화 구간 추출",
             requestNumber,
-          );
-          extractionResults.push({ chunkIndex: index + 1, ...extracted });
-        }
+          ),
+          ({ chunkNumber, totalChunks }) => {
+            updateStatus("extracting_chat", `대화 구간 ${chunkNumber}/${totalChunks}에서 재사용 가능한 정보를 추출하고 있습니다.`);
+            render();
+          },
+        );
         let reduceInputs = extractionResults;
         const intermediateWarnings = [];
         let reduceLevel = 0;
@@ -3042,6 +3132,12 @@
         section.append(createElement("p", { className: "pc-saved-drafts-message", role: "status", text: state.savedDraftMessage }));
       }
       if (!state.savedDraftsOpen) return section;
+      section.append(
+        createElement("p", {
+          className: "pc-saved-drafts-help",
+          text: "저장된 초안은 자동 삭제되지 않으며, 직접 삭제해야 합니다.",
+        }),
+      );
       const list = createElement("div", { className: "pc-saved-draft-list", id: "pc-saved-draft-list" });
       if (!state.savedDrafts.length) {
         list.append(createElement("div", { className: "pc-saved-drafts-empty", text: "저장된 초안이 없습니다." }));
@@ -3588,8 +3684,11 @@
       closeModal();
     };
     const keydown = (event) => {
-      if (replacementDialog && event.key === "Tab") {
-        const buttons = [...replacementDialog.element.querySelectorAll("button:not(:disabled)")];
+      const activeDialog = savedDraftCleanupDialog || replacementDialog;
+      if (activeDialog && event.key === "Tab") {
+        const buttons = [
+          ...activeDialog.element.querySelectorAll("button:not(:disabled)"),
+        ];
         if (!buttons.length) return;
         const current = buttons.indexOf(document.activeElement);
         const next = event.shiftKey
@@ -3600,7 +3699,8 @@
         return;
       }
       if (event.key === "Escape") {
-        if (replacementDialog) closeReplacementDialog(false);
+        if (savedDraftCleanupDialog) closeSavedDraftCleanupDialog(false);
+        else if (replacementDialog) closeReplacementDialog(false);
         else requestClose();
       }
     };
@@ -3629,6 +3729,7 @@
     document.addEventListener("keydown", keydown);
     modalCleanup = () => {
       document.removeEventListener("keydown", keydown);
+      closeSavedDraftCleanupDialog(false);
       closeReplacementDialog(false);
       if (sessionSaveTimer !== null) {
         hostMarinara.clearTimeout(sessionSaveTimer);

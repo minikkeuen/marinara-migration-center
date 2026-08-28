@@ -230,6 +230,14 @@
   line-height: 1.45;
 }
 
+.pc-saved-drafts-help {
+  margin: 0;
+  padding: 0 0.8rem 0.7rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
 .pc-saved-draft-list {
   border-top: 1px solid var(--border);
 }
