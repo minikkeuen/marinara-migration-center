@@ -1,0 +1,845 @@
+.cti-launcher {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+}
+
+.cti-launcher > svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+}
+
+.mc-header-actions {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.mc-header-primary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem 0.55rem 1.25rem;
+  background: var(--card);
+}
+
+.mc-navigation {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 0.25rem 0.75rem;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+}
+
+.mc-navigation button {
+  min-height: 2.1rem;
+  padding: 0.35rem 0.65rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mc-navigation button[aria-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+
+.mc-navigation button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.cti-overlay {
+  position: fixed;
+  z-index: 2147482000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--background) 42%, transparent);
+}
+
+.cti-dialog {
+  display: flex;
+  width: min(58rem, calc(100vw - 2rem));
+  max-height: min(46rem, calc(100vh - 2rem));
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: 0 1rem 3rem color-mix(in srgb, var(--foreground) 18%, transparent);
+  font-family: inherit;
+}
+
+.mc-dialog {
+  width: min(66rem, calc(100vw - 2rem));
+  height: min(52rem, calc(100vh - 2rem));
+  max-height: min(52rem, calc(100vh - 2rem));
+}
+
+.cti-footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--card);
+}
+
+.cti-header {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+.cti-heading-group {
+  min-width: 0;
+}
+
+.cti-heading-group h2,
+.cti-preview h3 {
+  margin: 0;
+  color: var(--foreground);
+}
+
+.cti-heading-group h2 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.cti-heading-group p {
+  margin: 0.15rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.cti-icon-button {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.cti-icon-button:hover,
+.cti-icon-button:focus-visible {
+  background: var(--accent);
+}
+
+.cti-icon-button:focus-visible,
+.cti-button:focus-visible,
+.cti-role-toggle button:focus-visible,
+.cti-field input:focus-visible,
+.cti-field select:focus-visible,
+.cti-dropzone:focus-within {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.cti-body {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(18rem, 0.9fr) minmax(0, 1.1fr);
+  overflow: hidden;
+}
+
+.cti-form,
+.cti-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cti-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-right: 1px solid var(--border);
+}
+
+.cti-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.cti-label {
+  color: var(--foreground);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.cti-field small,
+.cti-drop-copy small {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
+
+.cti-field input,
+.cti-field select {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.cti-field select:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.cti-identity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.cti-dropzone {
+  display: flex;
+  min-height: 5rem;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px dashed color-mix(in srgb, var(--primary) 50%, var(--border));
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--primary) 6%, var(--card));
+  cursor: pointer;
+  transition:
+    border-color 180ms cubic-bezier(0.25, 1, 0.5, 1),
+    background-color 180ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.cti-dropzone:hover,
+.cti-dropzone[data-dragging="true"] {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 11%, var(--card));
+}
+
+.cti-drop-icon {
+  display: grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--primary) 16%, var(--card));
+  color: var(--primary);
+}
+
+.cti-drop-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.cti-drop-copy strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cti-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.cti-status {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.cti-status[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--destructive) 48%, var(--border));
+  background: color-mix(in srgb, var(--destructive) 9%, var(--card));
+}
+
+.cti-status[data-tone="success"] {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--border));
+  background: color-mix(in srgb, var(--primary) 9%, var(--card));
+}
+
+.cti-preview {
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--card) 55%, var(--background));
+}
+
+.cti-preview-header {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+.cti-preview h3 {
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.cti-preview-header span {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cti-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0.35rem 1rem 1rem;
+}
+
+.cti-message-preview {
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.cti-message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--muted-foreground);
+  font-size: 0.625rem;
+  line-height: 1.3;
+}
+
+.cti-message-meta > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cti-role {
+  flex: 0 0 auto;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+}
+
+.cti-role-user {
+  color: var(--primary);
+}
+
+.cti-role-assistant {
+  color: var(--muted-foreground);
+}
+
+.cti-message-preview p {
+  margin: 0.45rem 0 0;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.cti-empty,
+.cti-preview-more {
+  margin: 0;
+  padding: 2.5rem 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  text-align: center;
+}
+
+.cti-preview-more {
+  padding: 1rem 0.5rem 0;
+}
+
+.cti-footer {
+  justify-content: flex-end;
+  min-height: 3.25rem;
+  padding: 0.45rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.mc-help-overlay {
+  position: fixed;
+  z-index: 2147483000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: color-mix(in srgb, var(--background) 55%, transparent);
+}
+
+.mc-help-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: 0 1rem 3rem color-mix(in srgb, var(--foreground) 18%, transparent);
+}
+
+.mc-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 0.75rem 0.65rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+
+.mc-help-header h2,
+.mc-help-content h3 {
+  margin: 0;
+}
+
+.mc-help-header h2 {
+  font-size: 1rem;
+}
+
+.mc-help-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+}
+
+.mc-help-content section + section {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.mc-help-content h3 {
+  font-size: 0.8rem;
+}
+
+.mc-help-content p,
+.mc-help-content ol {
+  margin: 0.3rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.mc-help-content ol {
+  display: grid;
+  gap: 0.25rem;
+  padding-left: 1.25rem;
+}
+
+.cti-button {
+  min-height: 2.4rem;
+  padding: 0.55rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    opacity 160ms cubic-bezier(0.25, 1, 0.5, 1),
+    transform 160ms cubic-bezier(0.25, 1, 0.5, 1),
+    background-color 160ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.cti-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.cti-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.cti-button-secondary {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--foreground);
+}
+
+.cti-button-secondary:hover:not(:disabled) {
+  background: var(--accent);
+}
+
+.cti-button-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.cti-button-primary:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+@media (max-width: 760px) {
+  .mc-navigation {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+  }
+
+  .cti-overlay {
+    place-items: stretch;
+    padding: 0;
+  }
+
+  .cti-dialog {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .cti-header .mc-header-primary {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+
+  .cti-footer {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .cti-body {
+    display: block;
+    overflow-y: auto;
+  }
+
+  .cti-form,
+  .cti-preview {
+    overflow: visible;
+  }
+
+  .cti-form {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .cti-preview-header {
+    position: static;
+  }
+
+  .cti-preview-list {
+    max-height: 22rem;
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 430px) {
+  .mc-navigation {
+    padding-right: 0.25rem;
+    padding-left: 0.25rem;
+  }
+
+  .mc-navigation button {
+    min-width: 0;
+    padding-right: 0.2rem;
+    padding-left: 0.2rem;
+    font-size: 0.68rem;
+  }
+
+  .mc-header-primary {
+    padding-left: 1rem;
+  }
+
+  .cti-heading-group p {
+    font-size: 0.6875rem;
+    line-height: 1.35;
+  }
+
+  .cti-form {
+    padding: 1rem;
+  }
+
+  .cti-identity-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cti-button {
+    min-width: 8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cti-dropzone,
+  .cti-button {
+    transition: none;
+  }
+}
+
+.cti-txt-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  padding-top: 0.15rem;
+}
+
+.cti-section-title {
+  padding-top: 0.15rem;
+  color: var(--foreground);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.cti-cleanup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.cti-role-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: color-mix(in srgb, var(--muted) 55%, var(--background));
+}
+
+.cti-role-toggle button {
+  min-height: 2.25rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.cti-role-toggle button[data-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--foreground) 12%, transparent);
+}
+
+@media (max-width: 760px) {
+  .cti-cleanup-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cti-check-row,
+.cti-cleanup-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  cursor: pointer;
+}
+
+.cti-check-row {
+  min-height: 2.25rem;
+  align-items: center;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.75rem;
+}
+
+.cti-check-row input,
+.cti-cleanup-item input {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.cti-cleanup-review {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--card);
+}
+
+.cti-cleanup-review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.cti-cleanup-review-header strong {
+  color: var(--foreground);
+  font-size: 0.75rem;
+}
+
+.cti-cleanup-review-header span {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.cti-cleanup-review-list {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.cti-cleanup-empty {
+  padding: 0.9rem 0.75rem;
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+
+.cti-cleanup-item {
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.cti-cleanup-item:last-child {
+  border-bottom: 0;
+}
+
+.cti-cleanup-item:hover {
+  background: var(--accent);
+}
+
+.cti-cleanup-item input {
+  margin-top: 0.15rem;
+}
+
+.cti-cleanup-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.cti-cleanup-item-title {
+  color: var(--foreground);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.cti-cleanup-before {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.cti-cleanup-after {
+  color: var(--primary);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+/* 1.3.0 — per-message import selection */
+.cti-preview-header {
+  flex-wrap: wrap;
+}
+.cti-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+.cti-preview-actions[hidden] {
+  display: none !important;
+}
+.cti-mini-button {
+  appearance: none;
+  border: 1px solid var(--border, rgba(127,127,127,.28));
+  border-radius: 0.45rem;
+  background: transparent;
+  color: inherit;
+  padding: 0.28rem 0.5rem;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.cti-mini-button:hover {
+  background: var(--accent, rgba(127,127,127,.12));
+}
+.cti-message-selectable {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+}
+.cti-message-checkbox {
+  margin-top: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  cursor: pointer;
+}
+.cti-message-preview-body {
+  min-width: 0;
+}
+.cti-message-preview[data-excluded="true"] .cti-message-preview-body {
+  opacity: 0.42;
+}
+.cti-message-preview[data-excluded="true"] p {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}

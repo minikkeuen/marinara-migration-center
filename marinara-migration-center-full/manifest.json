@@ -1,0 +1,30 @@
+{
+  "kind": "marinara.personal-extension",
+  "version": "1.0.0",
+  "config": {
+    "name": "마리나라 이식 센터",
+    "version": "1.0.0",
+    "description": "대화 기록을 가져오고 프롬프트를 검토 가능한 초안으로 변환해 캐릭터와 로어북으로 저장합니다.",
+    "runtime": "client",
+    "capabilities": [
+      "full_page_access"
+    ],
+    "jsPath": [
+      "xlsx-parser.js",
+      "chat-transcript-importer.js",
+      "prompts/prompt-conversion-prompts.js",
+      "prompts/json-repair-prompts.js",
+      "prompts/chat-extraction-prompts.js",
+      "prompts/lorebook-merge-prompts.js",
+      "prompt-converter-core.js",
+      "chat-extraction-core.js",
+      "lorebook-merge-core.js",
+      "asset-save-core.js",
+      "prompt-converter.js"
+    ],
+    "cssPath": [
+      "chat-transcript-importer.css",
+      "prompt-converter.css"
+    ]
+  }
+}
