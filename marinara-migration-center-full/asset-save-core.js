@@ -2,6 +2,7 @@
   "use strict";
 
   const SAVE_STRATEGIES = Object.freeze(["new", "append", "merge"]);
+  const SAVE_SCOPES = Object.freeze(["character", "lorebook", "all"]);
   const MERGE_ACTIONS = Object.freeze(["create", "append", "merge", "keep_separate", "conflict", "skip"]);
 
   const isRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
@@ -131,13 +132,16 @@
     };
   }
 
-  function buildSavePlan({ draft, excludedEntries, strategy, selectedLorebookId, existingEntries, mergeDecisions }) {
+  function buildSavePlan({ draft, excludedEntries, strategy, selectedLorebookId, existingEntries, mergeDecisions, scope = "all" }) {
     const errors = [];
+    const includeCharacter = scope === "character" || scope === "all";
+    const includeLorebook = scope === "lorebook" || scope === "all";
+    if (!SAVE_SCOPES.includes(scope)) errors.push("지원하지 않는 저장 범위입니다.");
     const characterPayload = buildCharacterPayload(draft);
-    if (!text(characterPayload.data.name)) errors.push("캐릭터 이름이 필요합니다.");
-    if (!SAVE_STRATEGIES.includes(strategy)) errors.push("지원하지 않는 로어북 저장 방식입니다.");
-    if (strategy === "new" && !text(draft?.lorebook?.name)) errors.push("새 로어북 이름이 필요합니다.");
-    if (strategy !== "new" && !text(selectedLorebookId)) errors.push("기존 로어북을 선택하세요.");
+    if (includeCharacter && !text(characterPayload.data.name)) errors.push("캐릭터 이름이 필요합니다.");
+    if (includeLorebook && !SAVE_STRATEGIES.includes(strategy)) errors.push("지원하지 않는 로어북 저장 방식입니다.");
+    if (includeLorebook && strategy === "new" && !text(draft?.lorebook?.name)) errors.push("새 로어북 이름이 필요합니다.");
+    if (includeLorebook && strategy !== "new" && !text(selectedLorebookId)) errors.push("기존 로어북을 선택하세요.");
 
     const excluded = new Set(Array.isArray(excludedEntries) ? excludedEntries : []);
     const entries = Array.isArray(draft?.lorebook?.entries) ? draft.lorebook.entries : [];
@@ -150,7 +154,7 @@
     const updates = [];
     const skips = [];
 
-    entries.forEach((entryValue, index) => {
+    if (includeLorebook) entries.forEach((entryValue, index) => {
       if (excluded.has(index)) {
         skips.push({ key: `skip:${index}`, index, name: text(entryValue?.name), reason: "review_excluded" });
         return;
@@ -206,11 +210,12 @@
       });
     });
 
-    return { errors, characterPayload, creates, updates, skips };
+    return { errors, characterPayload, creates, updates, skips, includeCharacter, includeLorebook };
   }
 
   globalThis.MarinaraAssetSaveCore = Object.freeze({
     MERGE_ACTIONS,
+    SAVE_SCOPES,
     SAVE_STRATEGIES,
     buildCharacterPayload,
     buildEntryPayload,

@@ -74,6 +74,12 @@
   const importIcon = () => iconPath(["M12 3v12", "m7 10 5 5 5-5", "M5 21h14"]);
   const migrationCenterIcon = () =>
     iconPath(["M12 3v9", "m8 8 4 4 4-4", "M5 17v4h14v-4"]);
+  const helpIcon = () => iconPath([
+    "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+    "M9.1 9a3 3 0 1 1 5.8 1c0 2-2.9 2-2.9 4",
+    "M12 18h.01",
+  ], 18);
+  const closeIcon = () => iconPath(["M18 6 6 18", "m6 6 12 12"], 18);
 
   function createCenterNavigation(activeView, blocked) {
     const navigation = createElement("div", { className: "mc-navigation", role: "tablist", ariaLabel: "마리나라 이식 센터 기능" });
@@ -112,7 +118,8 @@
     dialog.setAttribute("aria-labelledby", "mc-help-title");
     const header = createElement("header", { className: "mc-help-header" });
     const title = createElement("h2", { id: "mc-help-title", text: "사용법" });
-    const closeButton = createElement("button", { className: "cti-icon-button", type: "button", text: "×", ariaLabel: "사용법 닫기" });
+    const closeButton = createElement("button", { className: "cti-icon-button", type: "button", ariaLabel: "사용법 닫기" });
+    closeButton.append(closeIcon());
     header.append(title, closeButton);
     const content = createElement("div", { className: "mc-help-content" });
     const importSection = createElement("section");
@@ -133,7 +140,7 @@
     promptSection.querySelector("ol").append(
       createElement("li", { text: "통짜 또는 분할을 선택하고 원본 프롬프트를 입력합니다." }),
       createElement("li", { text: "필요하면 대화 내역 참조를 켜고 분석할 대화를 선택합니다." }),
-      createElement("li", { text: "변환 방식과 LLM 연결을 선택한 뒤 AI 분석을 실행합니다." }),
+      createElement("li", { text: "변환 방식과 AI 모델 연결을 선택한 뒤 분석을 실행합니다." }),
       createElement("li", { text: "작업소에서 결과를 검토하고 초안으로 보관하거나 Marinara 카드로 저장합니다." }),
     );
     const workspaceSection = createElement("section");
@@ -734,7 +741,7 @@
     if (lowerName.endsWith(".jsonl")) return maybeSanitizeStructured(parseJsonl(await file.text()), options);
     if (lowerName.endsWith(".txt")) return parseTxt(await file.text(), options);
     if (lowerName.endsWith(".xlsx")) {
-      if (!globalThis.MarinaraTranscriptXlsx?.parseXlsx) fail("Excel 파서가 로드되지 않았습니다.");
+      if (!globalThis.MarinaraTranscriptXlsx?.parseXlsx) fail("엑셀 파서가 로드되지 않았습니다.");
       const messages = await globalThis.MarinaraTranscriptXlsx.parseXlsx(await file.arrayBuffer());
       return {
         messages: finalizeMessages(
@@ -906,21 +913,21 @@
     const headerPrimary = createElement("div", { className: "mc-header-primary" });
     const headingGroup = createElement("div", { className: "cti-heading-group" });
     const title = createElement("h2", { id: "cti-title", text: "마리나라 이식 센터" });
-    const subtitle = createElement("p", { text: "Excel, JSON 또는 TXT 대화 기록을 실제 Marinara 메시지로 저장합니다." });
+    const subtitle = createElement("p", { text: "엑셀, JSON 또는 TXT 대화 기록을 실제 Marinara 메시지로 저장합니다." });
     headingGroup.append(title, subtitle);
     const closeButton = createElement("button", {
       className: "cti-icon-button",
       type: "button",
-      text: "×",
       ariaLabel: "가져오기 닫기",
     });
+    closeButton.append(closeIcon());
     closeButton.addEventListener("click", closeModal);
     const helpButton = createElement("button", {
       className: "cti-icon-button",
       type: "button",
-      text: "?",
       ariaLabel: "사용법 열기",
     });
+    helpButton.append(helpIcon());
     helpButton.title = "사용법";
     helpButton.addEventListener("click", openHelp);
     const headerActions = createElement("div", { className: "mc-header-actions" });
@@ -937,8 +944,8 @@
     const previewActions = createElement("div", { className: "cti-preview-actions" });
     const selectAllButton = createElement("button", { className: "cti-mini-button", type: "button", text: "전체 선택" });
     const deselectAllButton = createElement("button", { className: "cti-mini-button", type: "button", text: "전체 해제" });
-    const selectUserButton = createElement("button", { className: "cti-mini-button", type: "button", text: "User만" });
-    const selectAssistantButton = createElement("button", { className: "cti-mini-button", type: "button", text: "Assistant만" });
+    const selectUserButton = createElement("button", { className: "cti-mini-button", type: "button", text: "사용자만" });
+    const selectAssistantButton = createElement("button", { className: "cti-mini-button", type: "button", text: "AI 응답만" });
     previewActions.append(selectAllButton, deselectAllButton, selectUserButton, selectAssistantButton);
     previewHeader.append(previewTitle, previewCount, previewActions);
     const previewList = createElement("div", { className: "cti-preview-list" });
@@ -965,7 +972,7 @@
       chatNameInput.dataset.edited = "true";
     });
     const modeSelect = createElement("select");
-    modeSelect.append(option("roleplay", "Roleplay"), option("conversation", "Conversation"));
+    modeSelect.append(option("roleplay", "역할극"), option("conversation", "일반 대화"));
     const characterSelect = createElement("select");
     characterSelect.append(option("", "캐릭터 없음"));
     characterSelect.disabled = true;
@@ -999,10 +1006,10 @@
     txtOptions.hidden = true;
     const txtFirstRoleSelect = createElement("select");
     txtFirstRoleSelect.hidden = true;
-    txtFirstRoleSelect.append(option("user", "User"), option("assistant", "Assistant"));
+    txtFirstRoleSelect.append(option("user", "사용자"), option("assistant", "AI 응답"));
     const txtRoleToggle = createElement("div", { className: "cti-role-toggle", role: "group", ariaLabel: "TXT 첫 화자 역할" });
     const txtRoleButtons = [];
-    for (const [value, label] of [["user", "User"], ["assistant", "Assistant"]]) {
+    for (const [value, label] of [["user", "사용자"], ["assistant", "AI 응답"]]) {
       const button = createElement("button", { type: "button", text: label });
       button.dataset.value = value;
       button.addEventListener("click", () => {
@@ -1082,7 +1089,7 @@
     const importButton = createElement("button", {
       className: "cti-button cti-button-primary",
       type: "button",
-      text: "Import 실행",
+      text: "대화 가져오기",
     });
     importButton.disabled = true;
     footer.append(importButton);
@@ -1141,7 +1148,7 @@
         meta.append(
           createElement("span", {
             className: `cti-role cti-role-${message.role}`,
-            text: `${index + 1} ${message.role.toUpperCase()}`,
+            text: `${index + 1} ${message.role === "user" ? "사용자" : "AI 응답"}`,
           }),
         );
         if (message.name || message.timestamp) {
@@ -1414,7 +1421,7 @@
         }
         showStatus("error", `${error instanceof Error ? error.message : String(error)}${rollbackMessage}`);
         state.importing = false;
-        importButton.textContent = "Import 다시 실행";
+        importButton.textContent = "대화 다시 가져오기";
         updateImportAvailability();
       }
     });

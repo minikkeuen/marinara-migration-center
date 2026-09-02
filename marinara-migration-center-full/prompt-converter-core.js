@@ -2,14 +2,16 @@
   "use strict";
 
   const promptTemplates = globalThis.MarinaraPromptConversionPrompts;
+  const postprocessingPrompts = globalThis.MarinaraDraftPostprocessingPrompts;
   const repairPrompts = globalThis.MarinaraJsonRepairPrompts;
-  if (!promptTemplates || !repairPrompts) {
+  if (!promptTemplates || !postprocessingPrompts || !repairPrompts) {
     throw new Error("Prompt Converter prompt modules are unavailable");
   }
   const {
     ANALYSIS_SYSTEM_PROMPT,
     CHAT_DERIVED_SOURCE_INSTRUCTIONS,
     CORE_ANALYZER_INSTRUCTIONS,
+    DRAFT_CLASSIFICATION_INSTRUCTIONS,
     DEFAULT_CONTENT_FORMATTING_INSTRUCTIONS,
     EXTERNAL_LOREBOOK_SOURCE_INSTRUCTIONS,
     FIXED_OUTPUT_INSTRUCTIONS,
@@ -84,6 +86,23 @@
     };
   }
 
+  function normalizeLorebook(value) {
+    const lorebook = requireRecord(value, "lorebook");
+    if (hasOwn(lorebook, "entries") && !Array.isArray(lorebook.entries)) {
+      throw new DraftValidationError("로어북 항목(lorebook.entries)은 배열이어야 합니다.");
+    }
+    const category = hasOwn(lorebook, "category") ? lorebook.category : "world";
+    if (typeof category !== "string" || !LOREBOOK_CATEGORIES.includes(category)) {
+      throw new DraftValidationError(`로어북 분류(lorebook.category)는 ${LOREBOOK_CATEGORIES.join(", ")} 중 하나여야 합니다.`);
+    }
+    return {
+      name: optionalString(lorebook, "name", "lorebook"),
+      description: optionalString(lorebook, "description", "lorebook"),
+      category,
+      entries: (lorebook.entries ?? []).map(normalizeEntry),
+    };
+  }
+
   function normalizePresetCandidate(value, index) {
     const path = `presetCandidates[${index}]`;
     const candidate = requireRecord(value, path);
@@ -102,19 +121,10 @@
     const root = requireRecord(value, "초안(draft)");
     const character = requireRecord(root.character, "character");
     const extensions = requireRecord(character.extensions, "character.extensions");
-    const lorebook = requireRecord(root.lorebook, "lorebook");
-
-    if (hasOwn(lorebook, "entries") && !Array.isArray(lorebook.entries)) {
-      throw new DraftValidationError("로어북 항목(lorebook.entries)은 배열이어야 합니다.");
-    }
+    const lorebook = normalizeLorebook(root.lorebook);
     if (hasOwn(root, "presetCandidates") && !Array.isArray(root.presetCandidates)) {
       throw new DraftValidationError("프리셋 후보(presetCandidates)는 배열이어야 합니다.");
     }
-    const category = hasOwn(lorebook, "category") ? lorebook.category : "world";
-    if (typeof category !== "string" || !LOREBOOK_CATEGORIES.includes(category)) {
-      throw new DraftValidationError(`로어북 분류(lorebook.category)는 ${LOREBOOK_CATEGORIES.join(", ")} 중 하나여야 합니다.`);
-    }
-
     const draft = {
       character: {
         name: optionalString(character, "name", "character"),
@@ -132,12 +142,7 @@
           appearance: optionalString(extensions, "appearance", "character.extensions"),
         },
       },
-      lorebook: {
-        name: optionalString(lorebook, "name", "lorebook"),
-        description: optionalString(lorebook, "description", "lorebook"),
-        category,
-        entries: (lorebook.entries ?? []).map(normalizeEntry),
-      },
+      lorebook,
       presetCandidates: (root.presetCandidates ?? []).map(normalizePresetCandidate),
       residualInstructions: optionalString(root, "residualInstructions", "draft"),
       warnings: optionalStringArray(root, "warnings", "draft"),
@@ -184,6 +189,47 @@
       throw new DraftValidationError(`AI 응답을 JSON으로 해석하지 못했습니다: ${detail}`);
     }
     return normalizeDraft(parsed);
+  }
+
+  function parseLorebookResponse(raw) {
+    const jsonText = stripJsonCodeFence(raw);
+    let parsed;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "알 수 없는 JSON 오류";
+      throw new DraftValidationError(`AI 응답을 JSON으로 해석하지 못했습니다: ${detail}`);
+    }
+    return normalizeLorebook(requireRecord(parsed, "결과").lorebook);
+  }
+
+  function applyLorebookResult(draftValue, lorebookValue, options = {}) {
+    const draft = normalizeDraft(draftValue, { allowEmpty: true });
+    const lorebook = normalizeLorebook(lorebookValue);
+    if (!Number.isInteger(options.entryIndex)) return { ...draft, lorebook };
+    const entryIndex = options.entryIndex;
+    if (entryIndex < 0 || entryIndex >= draft.lorebook.entries.length) {
+      throw new RangeError("교체할 로어북 항목 위치가 올바르지 않습니다.");
+    }
+    return {
+      ...draft,
+      lorebook: {
+        ...draft.lorebook,
+        entries: [
+          ...draft.lorebook.entries.slice(0, entryIndex),
+          ...lorebook.entries,
+          ...draft.lorebook.entries.slice(entryIndex + 1),
+        ],
+      },
+    };
+  }
+
+  function remapIndexesAfterEntryReplacement(indexes, entryIndex, replacementCount) {
+    const shift = Math.max(0, Math.round(Number(replacementCount) || 0)) - 1;
+    return [...(indexes || [])].flatMap((index) => {
+      if (!Number.isInteger(index) || index === entryIndex) return [];
+      return [index > entryIndex ? index + shift : index];
+    });
   }
 
   function normalizeSources(inputMode, sourceValues) {
@@ -331,11 +377,40 @@
     return repairPrompts.buildPromptConversionRepairMessages(rawResponse, validationMessage);
   }
 
+  function buildDraftReanalysisMessages(draftValue, settingsValue, options = {}) {
+    return postprocessingPrompts.buildDraftReanalysisMessages({
+      draft: normalizeDraft(draftValue, { allowEmpty: true }),
+      settings: normalizeSettings(settingsValue),
+      userInstructions: typeof options.userInstructions === "string" ? options.userInstructions : "",
+      preserveLorebook: options.preserveLorebook === true,
+    });
+  }
+
+  function buildLorebookResplitMessages(lorebookValue, settingsValue, options = {}) {
+    const lorebook = normalizeLorebook(lorebookValue);
+    const characterContext = options.characterContext
+      ? normalizeDraft({
+          character: options.characterContext,
+          lorebook: { category: "world", entries: [] },
+          presetCandidates: [],
+          residualInstructions: "",
+          warnings: [],
+        }, { allowEmpty: true }).character
+      : null;
+    return postprocessingPrompts.buildLorebookResplitMessages({
+      lorebook,
+      characterContext,
+      scope: options.scope,
+      settings: normalizeSettings(settingsValue),
+    });
+  }
+
   globalThis.MarinaraPromptConverterCore = Object.freeze({
     ANALYSIS_SYSTEM_PROMPT,
     CHAT_DERIVED_SOURCE_INSTRUCTIONS,
     CONVERSION_MODES,
     CORE_ANALYZER_INSTRUCTIONS,
+    DRAFT_CLASSIFICATION_INSTRUCTIONS,
     DEFAULT_CONTENT_FORMATTING_INSTRUCTIONS,
     EXTERNAL_LOREBOOK_SOURCE_INSTRUCTIONS,
     DEFAULT_SETTINGS,
@@ -345,13 +420,19 @@
     PRESET_CATEGORIES,
     FIXED_OUTPUT_INSTRUCTIONS,
     buildAnalysisMessages,
+    buildDraftReanalysisMessages,
     buildGenerationParameters,
+    buildLorebookResplitMessages,
     buildRepairMessages,
+    applyLorebookResult,
     normalizeSettings,
     normalizeDraft,
+    normalizeLorebook,
     normalizeConversionMode,
     normalizeSources,
     parseDraftResponse,
+    parseLorebookResponse,
+    remapIndexesAfterEntryReplacement,
     savedDraftFingerprint,
     isSavedDraftDirty,
     stripJsonCodeFence,

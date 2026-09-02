@@ -86,6 +86,12 @@
   background: var(--accent);
 }
 
+.pc-icon-button > svg {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
 .pc-body {
   min-height: 0;
   flex: 1 1 auto;
@@ -236,6 +242,12 @@
   color: var(--muted-foreground);
   font-size: 0.7rem;
   line-height: 1.45;
+}
+
+.pc-saved-drafts-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.8rem 0.65rem;
 }
 
 .pc-saved-draft-list {
@@ -452,6 +464,11 @@
   flex: 0 0 auto;
 }
 
+.pc-save-scope {
+  width: min(34rem, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .pc-source-fields,
 .pc-review-grid,
 .pc-entry-grid {
@@ -507,6 +524,25 @@
 .pc-field textarea {
   resize: vertical;
   line-height: 1.5;
+}
+
+.pc-postprocess-instructions {
+  width: 100%;
+  min-height: 6rem;
+  padding: 0.55rem 0.7rem;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.pc-postprocess-instructions:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 .pc-source-fields textarea {
@@ -894,6 +930,8 @@
 
 .pc-status[data-state="analyzing"] strong::before,
 .pc-status[data-state="analyzing_merge"] strong::before,
+.pc-status[data-state="reanalyzing_draft"] strong::before,
+.pc-status[data-state="resplitting_lorebook"] strong::before,
 .pc-status[data-state="extracting_chat"] strong::before,
 .pc-status[data-state="reducing_chat"] strong::before,
 .pc-status[data-state="loading_connections"] strong::before {
@@ -959,6 +997,153 @@
 .pc-review-heading span {
   color: var(--muted-foreground);
   font-size: 0.6875rem;
+}
+
+.pc-review-actions,
+.pc-review-heading-actions,
+.pc-entry-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pc-review-actions {
+  flex-wrap: wrap;
+}
+
+.pc-postprocess-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pc-postprocess-toggles {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 24rem;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pc-postprocess-instructions-toggle {
+  font-size: 0.8125rem;
+}
+
+.pc-postprocess-preserve-lorebook {
+  width: 100%;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
+}
+
+.pc-inline-model-field {
+  display: flex;
+  min-width: min(100%, 18rem);
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--foreground);
+}
+
+.pc-inline-model-label {
+  flex: 0 0 auto;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.pc-inline-model-field select {
+  min-width: 0;
+  min-height: 2.4rem;
+  flex: 1 1 16rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.pc-inline-model-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.pc-inline-model-field select:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.pc-review-heading-actions,
+.pc-entry-actions {
+  justify-content: flex-end;
+}
+
+.pc-lorebook-context-option {
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
+}
+
+.pc-resplit-select,
+.pc-resplit-select-all {
+  color: var(--foreground);
+}
+
+.pc-resplit-select-all {
+  font-size: 0.8125rem;
+}
+
+.pc-lorebook-resplit-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.pc-lorebook-reanalysis {
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.pc-lorebook-resplit-options {
+  display: grid;
+  align-items: start;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, auto);
+  grid-template-areas:
+    "selection model"
+    "context context";
+}
+
+.pc-lorebook-resplit-checks {
+  display: flex;
+  grid-area: selection;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.pc-lorebook-resplit-options > .pc-inline-model-field {
+  grid-area: model;
+}
+
+.pc-lorebook-resplit-options > .pc-lorebook-context-option {
+  grid-area: context;
+  width: 100%;
+}
+
+.pc-postprocess-actions {
+  justify-content: flex-end;
+}
+
+.pc-lorebook-resplit-actions {
+  width: 100%;
+  justify-content: flex-end;
 }
 
 .pc-entry-list {
@@ -1100,24 +1285,6 @@
   gap: 0.65rem;
 }
 
-.pc-save-confirmation {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.55rem;
-  padding: 0.75rem 0.8rem;
-  border: 1px solid color-mix(in srgb, var(--primary) 42%, var(--border));
-  border-radius: 0.55rem;
-  background: color-mix(in srgb, var(--primary) 7%, var(--card));
-  color: var(--foreground);
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.pc-save-confirmation input {
-  flex: 0 0 auto;
-  margin-top: 0.15rem;
-}
-
 .pc-save-message,
 .pc-save-stale {
   margin: 0;
@@ -1199,6 +1366,7 @@
   font: inherit;
   font-size: 0.75rem;
   font-weight: 650;
+  white-space: nowrap;
   cursor: pointer;
   transition:
     opacity 160ms cubic-bezier(0.25, 1, 0.5, 1),
@@ -1234,16 +1402,21 @@
   opacity: 0.88;
 }
 
-.pc-footer-note {
-  margin-right: auto;
-  color: var(--muted-foreground);
-  font-size: 0.6875rem;
-}
-
 .pc-footer-actions {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+
+.pc-footer[data-view="review"] .pc-footer-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.pc-footer[data-view="review"] {
+  flex-wrap: wrap;
 }
 
 .pc-session-controls {
@@ -1255,6 +1428,8 @@
 }
 
 .pc-session-status {
+  min-width: 0;
+  flex: 1 1 8rem;
   max-width: 26rem;
   overflow: hidden;
   color: var(--muted-foreground);
@@ -1306,8 +1481,17 @@
   .pc-review-grid,
   .pc-entry-grid,
   .pc-connection-row,
-  .pc-settings-grid {
+  .pc-settings-grid,
+  .pc-lorebook-resplit-options {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "selection"
+      "model"
+      "context";
+  }
+
+  .pc-lorebook-resplit-options .pc-inline-model-field {
+    width: 100%;
   }
 
   .pc-merge-comparison {
@@ -1342,6 +1526,15 @@
 
   .pc-chat-actions > .pc-button {
     width: 100%;
+  }
+
+  .pc-review-heading {
+    align-items: flex-start;
+  }
+
+  .pc-review-heading-actions,
+  .pc-entry-actions {
+    flex-wrap: wrap;
   }
 
   .pc-review-grid-compact > .pc-field:nth-child(-n + 2),
@@ -1398,8 +1591,8 @@
   }
 
   .pc-footer[data-view="review"] .pc-footer-actions {
-    width: 100%;
-    flex-wrap: wrap;
+    width: auto;
+    flex-wrap: nowrap;
     justify-content: flex-end;
   }
 
@@ -1439,6 +1632,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .pc-status[data-state="analyzing"] strong::before,
+  .pc-status[data-state="reanalyzing_draft"] strong::before,
+  .pc-status[data-state="resplitting_lorebook"] strong::before,
   .pc-status[data-state="extracting_chat"] strong::before,
   .pc-status[data-state="reducing_chat"] strong::before,
   .pc-status[data-state="loading_connections"] strong::before {

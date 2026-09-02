@@ -4,7 +4,7 @@ Marinara Engine용 채팅 기록 Import 확장 프로그램입니다.
 
 TXT, Excel (`.xlsx`), JSON, JSONL 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
 
-**Version 1.0.1**
+**Version 1.5.1**
 
 API/schema 기준 확인: Marinara Engine 2.4.4 소스. Character-Lorebook 연결에는 공식 `embedded-lorebook/embed` 경로가 필요합니다.
 
@@ -32,7 +32,9 @@ API/schema 기준 확인: Marinara Engine 2.4.4 소스. Character-Lorebook 연�
 - JSON 검증, 설정 가능한 유한 자동 교정, 편집 가능한 Review
 - 마지막 분석 결과와 Review 수정 내용을 다시 여는 작업소
 - 자동저장과 분리된 다중 Saved Draft 보관·열기·이름 변경·삭제
-- Review 확정값을 공식 API로 Character와 Lorebook에 저장
+- 현재 Review Draft만 사용하는 작업 결과 재분석
+- 전체 또는 개별 Lorebook Entry 다시 나누기와 선택적 Character Context
+- Review 확정값을 공식 API로 Character만, Lorebook만 또는 둘 다 저장
 - 새 Lorebook 생성, 기존 Lorebook에 추가, 사용자 확인 기반 Entry 병합
 - 부분 실패 결과와 실패 항목 재시도, 동일 Review 중복 저장 방지
 
@@ -71,7 +73,7 @@ UI의 수치는 실제 billing token이 아닌 범위 선택과 Chunking용 **�
 
 Marinara connections API에서 모델이 설정된 텍스트 생성 Connection만 표시하고, 선택한 Connection으로 raw generation API를 호출합니다. 기본적으로 Connection의 generation 설정을 사용하며 Temperature와 Max output tokens는 사용자가 override를 켠 경우에만 요청에 추가합니다. 응답 제한 시간이 지나면 현재 raw generation run을 중단합니다. API key는 Marinara가 관리하며 확장은 읽거나 저장하지 않습니다.
 
-**AI 설정**에서는 생성 설정 재정의, 응답 제한 시간, JSON 교정 횟수, 최종 JSON 값의 표현 방식을 조절하는 **내용 및 형식 지침**, 그리고 **언어 고유 표현 보존**을 수정할 수 있습니다. 분석 정책과 JSON schema는 확장에 고정되어 사용자 지침으로 덮어쓸 수 없습니다. 언어 표현 보존 옵션은 기본적으로 꺼져 있으며, 켠 경우에만 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현을 원어와 함께 선택적으로 유지합니다. AI 설정은 작업 session과 별도의 확장 전용 `marinara.storage` 키에 저장됩니다. 사용자 지침 또는 전체 설정을 1.0.1 기본값으로 복원할 수 있습니다.
+**AI 설정**에서는 생성 설정 재정의, 응답 제한 시간, JSON 교정 횟수, 최종 JSON 값의 표현 방식을 조절하는 **내용 및 형식 지침**, 그리고 **언어 고유 표현 보존**을 수정할 수 있습니다. 분석 정책과 JSON schema는 확장에 고정되어 사용자 지침으로 덮어쓸 수 없습니다. 언어 표현 보존 옵션은 기본적으로 꺼져 있으며, 켠 경우에만 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현을 원어와 함께 선택적으로 유지합니다. AI 설정은 작업 session과 별도의 확장 전용 `marinara.storage` 키에 저장됩니다. 사용자 지침 또는 전체 설정을 1.5.0 기본값으로 복원할 수 있습니다.
 
 Prompt Conversion의 마지막 작업 1개는 확장 전용 working session으로 자동 저장됩니다. Original/Separated 입력, 변환 모드와 AI 설정, Connection 선택, 대화 참조 설정과 선택 ID, 대화 분석 기반 프롬프트, AI draft, Review 수정 및 제외 상태를 복원합니다. 로어북 병합 분석을 마친 경우 선택 로어북, 분석 지문, 항목별 action·매칭 ID·제안 사유·경고·최종 편집값도 함께 복원합니다. 다시 불러온 대상 로어북이나 초안이 저장 당시와 다르면 기존 병합 결과를 stale 처리하고 재분석을 요구합니다. 입력 변경은 600ms debounce 후 저장하며 창을 닫을 때 남은 변경을 한 번 더 저장합니다. `작업 초기화`는 이 session만 지우고 AI Settings, Saved Draft, 실제 Marinara 자산에는 영향을 주지 않습니다. 자동저장 데이터가 약 900KB 예산을 넘으면 기존 working session을 덮어쓰지 않고 UI에 오류를 표시합니다.
 
@@ -79,9 +81,13 @@ Prompt Conversion의 마지막 작업 1개는 확장 전용 working session으�
 
 상단 **작업소**에서는 마지막 working session의 AI draft와 Review 수정 상태를 다시 열고 Saved Draft 목록을 관리합니다. 현재 분석 결과가 없으면 빈 상태와 프롬프트 이식 이동 버튼을 표시합니다. Saved Draft와 실제 Character/Lorebook 자산은 서로 다른 데이터입니다.
 
-1.0.1 고정 분석기 프롬프트는 원본 프롬프트를 명령이 아닌 신뢰할 수 없는 분석 데이터로 취급합니다. 단순 문자열 유사성으로 정보를 제거하지 않고 강도·조건·예외·의도적인 강조를 의미의 일부로 처리합니다. 해결할 수 없는 모순은 임의로 선택하지 않고 경고로 올리며, 초안 작성 후 원본과 다시 대조해 누락·창작·강도 변화·잘못 제거된 강조를 점검하도록 지시합니다. JSON 전용 출력 규칙과 schema도 고정됩니다. 응답에서 JSON 코드 블록을 제거한 뒤 필수 객체, 필드 타입, 로어북 분류, 항목 배열, 프리셋 후보, 빈 결과를 검증합니다. 검증 실패 시 설정된 횟수만큼 JSON 교정을 요청하고, 그래도 실패하면 원본과 마지막 교정 응답을 표시합니다. 교정 횟수는 0~5회로 제한됩니다.
+1.5.0 고정 분석기 프롬프트는 원본 프롬프트를 명령이 아닌 신뢰할 수 없는 분석 데이터로 취급합니다. 단순 문자열 유사성으로 정보를 제거하지 않고 강도·조건·예외·의도적인 강조를 의미의 일부로 처리합니다. 해결할 수 없는 모순은 임의로 선택하지 않고 경고로 올리며, 초안 작성 후 원본과 다시 대조해 누락·창작·강도 변화·잘못 제거된 강조를 점검하도록 지시합니다. JSON 전용 출력 규칙과 schema도 고정됩니다. 응답에서 JSON 코드 블록을 제거한 뒤 필수 객체, 필드 타입, 로어북 분류, 항목 배열, 프리셋 후보, 빈 결과를 검증합니다. 검증 실패 시 설정된 횟수만큼 JSON 교정을 요청하고, 그래도 실패하면 원본과 마지막 교정 응답을 표시합니다. 교정 횟수는 0~5회로 제한됩니다.
 
 Review에서는 Character 주요 필드, Lorebook 이름·설명·category, Entry 내용·keys·boolean 설정·제외 여부, Preset 후보, residual instructions와 warnings를 수정할 수 있습니다. 프리셋 후보는 작업소에서 기본적으로 접혀 있으며 제목을 눌러 열어 확인·수정합니다. 최초 Prompt 분석은 비교 대상이 없는 로어북 통합 제안을 만들지 않습니다. 사용자가 `기존 로어북과 항목 단위 병합`을 선택하고 실제 로어북을 불러온 뒤 `AI 병합 분석`을 실행하면 별도 요청으로 Entry별 제안을 만듭니다. 병합 Review에서는 기존 Entry의 content, keys, secondaryKeys를 Draft와 함께 표시하고 action, 대상 Entry, 최종 저장 값을 사용자가 확인해야 합니다. 충돌이 없고 필요한 대상 항목이 모두 선택된 경우 `전체 결정 확인`으로 모든 결정을 한 번에 체크할 수 있습니다. Draft나 기존 Entry가 바뀌면 이전 제안은 무효화됩니다.
+
+**작업 결과 재분석**은 기본적으로 접혀 있으며, 현재 Review에서 사용자가 수정한 최신 Draft만 AI에 보내 다시 검토·정리합니다. Character, Lorebook, Preset 후보와 Residual Instructions 사이의 scope 및 Character 내부 필드 분류에는 최초 분석과 동일한 source-independent 고정 분류 정책을 사용합니다. `사용자 지침 추가`를 켜면 비어 있지 않은 추가 지침을 이 후처리 요청에만 함께 전달합니다. `로어북 보존`은 실행 버튼 바로 위의 전체 너비 옵션이며, 켜면 현재 Lorebook과 Entries를 AI 입력에서 제외하고 검증된 결과를 반영할 때 기존 Lorebook을 그대로 복원합니다. 우측 모델 선택칸은 기본적으로 최초 분석에 사용한 모델명을 표시하고 같은 모델을 사용하며, 필요하면 이 요청에만 다른 연결을 선택할 수 있습니다. Original Prompt, 별도 Lorebook Source, Conversation 원문과 대화 분석 기반 프롬프트는 보내지 않으며, 누락된 원본 정보를 복구하는 기능이 아닙니다. 검증과 설정된 JSON 자동 교정을 통과한 결과만 전체 Review Draft에 반영합니다.
+
+**로어북 재분석**은 로어북 하단에서 기본적으로 접혀 있습니다. 각 Entry의 선택 체크박스로 대상을 고르고 `로어북 전체 선택`과 우측 모델을 설정한 뒤, 전체 너비의 `캐릭터 설정을 참고 정보로 포함` 옵션과 아래 줄의 `선택한 로어북 다시 나누기`를 사용합니다. 전체를 선택하면 현재 Lorebook 전체를 함께 재구성하고, 일부만 선택하면 선택된 각 Entry를 더 적절한 의미 단위로 나눠 원래 위치에 교체하며 선택하지 않은 Entry는 유지합니다. 일부 선택은 모든 대상의 결과가 검증된 뒤에만 한 번에 반영하므로 중간 실패나 취소로 Review 일부만 바뀌지 않습니다. 캐릭터 참고 옵션은 기본적으로 꺼져 있으며, 켜면 현재 Character Draft가 읽기 전용 참고 자료로만 전달됩니다. 모든 재분석은 기존 generation override, timeout, 취소, JSON 검증·교정 흐름을 사용하며 실패하거나 취소되면 기존 Review Draft를 유지합니다.
 
 ## Character / Lorebook 저장
 
@@ -89,7 +95,11 @@ Character는 `POST /api/characters`의 Character Card V2 `data` 본문으로 생
 
 Character와 Character Lorebook 연결은 공식 `POST /api/characters/:id/embedded-lorebook/embed` API를 사용합니다. 이 API가 Lorebook의 Character 링크와 Character Card V2 `character_book`을 동기화합니다. Engine schema상 카드에 연결할 수 없는 World·Persona 등 다른 종류의 기존 Lorebook은 Entry 저장만 진행하고 연결은 `해당 없음`으로 표시합니다. 신규 Entry가 여러 개면 bulk 생성 API를 우선하고, 기존 Entry 수정은 공식 Entry PATCH API를 사용합니다. Entry 생성 payload에는 Review의 `name`, `content`, `keys`, `secondaryKeys`, `constant`, `selective`만 전달하고 고급 insertion 필드는 Engine 기본값에 맡깁니다.
 
+실제 저장 범위는 `캐릭터와 로어북`, `캐릭터만`, `로어북만` 중 하나를 본문에서 선택하며 기본값은 둘 다입니다. 하단에는 단일 `저장` 버튼만 표시하고 실행 시 선택 범위와 저장 제외 대상을 한 번 확인합니다. 로어북만 저장할 때 Character를 임시 생성하지 않으며, 이미 저장된 Character ID가 있을 때만 가능한 연결을 수행합니다. 범위별 fingerprint와 Character/Lorebook/Entry 저장 상태를 독립적으로 유지하므로 한쪽을 먼저 저장한 뒤 다른 쪽을 저장해도 성공한 자산을 다시 생성하지 않습니다.
+
 저장은 부분 성공을 허용합니다. 성공한 Character, Lorebook, Entry는 유지하며 기존 자산을 자동 삭제하거나 전체 rollback하지 않습니다. 실패 항목과 오류를 표시하고 같은 Review fingerprint 안에서는 성공 항목을 건너뛰어 실패 항목만 재시도합니다. 저장 완료 ID와 상태는 작업 session에 기록되며 같은 Review 상태의 중복 생성을 차단합니다. Review가 변경되면 이전 저장 결과임을 표시하고 다시 명시적으로 확인해야 저장할 수 있습니다.
+
+분석 중 이식 센터 창을 닫으면 요청을 취소하지 않고 같은 Marinara 페이지 안에서 계속 실행합니다. 창을 다시 열면 진행 중인 화면 또는 완료 결과를 복원하며, 분석 시작 전과 숨겨진 창에서 분석이 끝난 직후 작업 session을 순서대로 자동저장합니다. 모바일 운영체제가 화면 잠금 중 브라우저 네트워크 연결 자체를 종료하면 현재 raw generation API도 요청을 취소하므로, 앱 또는 브라우저 프로세스가 중단된 상태까지 서버에서 계속 실행되는 영속 작업은 보장하지 않습니다.
 
 ## TXT Import
 

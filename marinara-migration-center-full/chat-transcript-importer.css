@@ -158,6 +158,12 @@
   background: var(--accent);
 }
 
+.cti-icon-button > svg {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
 .cti-icon-button:focus-visible,
 .cti-button:focus-visible,
 .cti-role-toggle button:focus-visible,

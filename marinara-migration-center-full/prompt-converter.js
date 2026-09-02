@@ -21,6 +21,7 @@
   globalThis.MarinaraMigrationCenter = migrationCenter;
   let modalRoot = null;
   let modalCleanup = null;
+  let backgroundPromptSession = null;
 
   if (!core || !chatCore || !mergeCore || !assetCore || !repairPrompts || !requestRetryCore) {
     hostMarinara.log.error("Prompt Converter core modules are unavailable");
@@ -70,6 +71,7 @@
         status: interrupted ? "failed" : storedStatus,
         id: storedString(part.id),
         name: storedString(part.name),
+        reason: storedString(part.reason),
         error: interrupted ? "이전 저장 실행이 완료되지 않았습니다. 재시도하세요." : storedString(part.error),
       };
     };
@@ -91,6 +93,9 @@
       : [];
     return {
       fingerprint: storedString(value.fingerprint),
+      characterFingerprint: storedString(value.characterFingerprint),
+      lorebookFingerprint: storedString(value.lorebookFingerprint),
+      linkFingerprint: storedString(value.linkFingerprint),
       strategy: assetCore.SAVE_STRATEGIES.includes(value.strategy) ? value.strategy : "new",
       character: normalizePart(value.character),
       lorebook: normalizePart(value.lorebook),
@@ -133,6 +138,7 @@
         other: storedString(sources.other),
       },
       selectedConnectionId: storedString(value.selectedConnectionId),
+      analysisConnectionId: storedString(value.analysisConnectionId) || storedString(value.selectedConnectionId),
       draft,
       excludedEntries: Array.isArray(value.excludedEntries)
         ? value.excludedEntries.filter((item) => Number.isInteger(item) && item >= 0)
@@ -140,6 +146,7 @@
       excludedPresetCandidates: Array.isArray(value.excludedPresetCandidates)
         ? value.excludedPresetCandidates.filter((item) => Number.isInteger(item) && item >= 0)
         : [],
+      lorebookCharacterContext: value.lorebookCharacterContext === true,
       chatReferenceEnabled: value.chatReferenceEnabled === true,
       chatSourceMode: value.chatSourceMode === "chat" ? "chat" : "import",
       selectedChatId: storedString(value.selectedChatId),
@@ -157,6 +164,9 @@
         : assetCore.SAVE_STRATEGIES.includes(legacyIntegration.strategy)
           ? legacyIntegration.strategy
           : "new",
+      assetSaveScope: assetCore.SAVE_SCOPES.includes(value.assetSaveScope)
+        ? value.assetSaveScope
+        : "all",
       selectedLorebookId: storedString(value.selectedLorebookId),
       mergeDecisions: normalizeStoredMergeDecisions(value.mergeDecisions),
       mergeAnalysisStatus: ["success", "stale"].includes(value.mergeAnalysisStatus)
@@ -247,6 +257,13 @@
     }
     return svg;
   }
+
+  const helpIcon = () => iconPath([
+    "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20",
+    "M9.1 9a3 3 0 1 1 5.8 1c0 2-2.9 2-2.9 4",
+    "M12 18h.01",
+  ], 18);
+  const closeIcon = () => iconPath(["M18 6 6 18", "m6 6 12 12"], 18);
 
   function cloneSettings(value) {
     return core.normalizeSettings(value);
@@ -386,6 +403,11 @@
   }
 
   function openConverter(initialView = "input") {
+    if (backgroundPromptSession) {
+      migrationCenter.closeImport?.();
+      backgroundPromptSession.restore(initialView);
+      return;
+    }
     const importedConversationSource = migrationCenter.importedConversationSource || null;
     const restoredSession = cachedSession;
     migrationCenter.closeImport?.();
@@ -405,14 +427,26 @@
       sources: restoredSession ? { ...restoredSession.sources } : { combined: "", character: "", worldLore: "", systemStyle: "", other: "" },
       connections: [],
       selectedConnectionId: restoredSession?.selectedConnectionId || "",
+      analysisConnectionId: restoredSession?.analysisConnectionId || restoredSession?.selectedConnectionId || "",
+      draftReanalysisConnectionId: "",
+      lorebookResplitConnectionId: "",
       status: "loading_connections",
-      statusMessage: "LLM 연결을 불러오는 중입니다.",
+      statusMessage: "AI 모델 연결을 불러오는 중입니다.",
       draft: restoredSession?.draft ? core.normalizeDraft(restoredSession.draft, { allowEmpty: true }) : null,
       rawResponse: "",
       repairResponse: "",
       excludedEntries: new Set(restoredSession?.excludedEntries || []),
       excludedPresetCandidates: new Set(restoredSession?.excludedPresetCandidates || []),
+      lorebookResplitSelection: new Set(),
+      lorebookCharacterContext: restoredSession?.lorebookCharacterContext || false,
+      draftReanalysisInstructionsEnabled: false,
+      draftReanalysisInstructions: "",
+      draftReanalysisPreserveLorebook: false,
+      draftReanalysisOpen: false,
+      lorebookReanalysisOpen: false,
+      postprocessKind: "",
       activeRunId: "",
+      activeGenerationConnectionId: "",
       activeRequest: 0,
       abortRequested: false,
       settings: cloneSettings(cachedSettings),
@@ -445,6 +479,7 @@
       chatAnalysisWarnings: [...(restoredSession?.chatAnalysisWarnings || [])],
       chatAnalysisMessage: restoredSession?.chatAnalysisMessage || "",
       lorebookSaveStrategy: restoredSession?.lorebookSaveStrategy || "new",
+      assetSaveScope: restoredSession?.assetSaveScope || "all",
       lorebooks: [],
       lorebooksStatus: "idle",
       lorebooksMessage: "",
@@ -459,6 +494,7 @@
       mergeAnalysisWarnings: [...(restoredSession?.mergeAnalysisWarnings || [])],
       assetSaveConfirmed: false,
       assetSaving: false,
+      assetSaveActiveScope: "",
       assetSaveMessage: "",
       assetSaveResult: restoredSession?.assetSaveResult || null,
       savedDrafts: cloneJson(cachedSavedDrafts),
@@ -488,15 +524,15 @@
     const closeButton = createElement("button", {
       className: "pc-icon-button",
       type: "button",
-      text: "×",
       ariaLabel: "마리나라 이식 센터 닫기",
     });
+    closeButton.append(closeIcon());
     const helpButton = createElement("button", {
       className: "pc-icon-button",
       type: "button",
-      text: "?",
       ariaLabel: "사용법 열기",
     });
+    helpButton.append(helpIcon());
     helpButton.title = "사용법";
     helpButton.addEventListener("click", () => migrationCenter.openHelp?.());
     const headerActions = createElement("div", { className: "mc-header-actions" });
@@ -529,7 +565,14 @@
     document.body.appendChild(root);
     modalRoot = root;
 
-    const isWorking = () => state.assetSaving || ["analyzing", "analyzing_merge", "extracting_chat", "reducing_chat"].includes(state.status);
+    const isWorking = () => state.assetSaving || [
+      "analyzing",
+      "analyzing_merge",
+      "extracting_chat",
+      "reducing_chat",
+      "reanalyzing_draft",
+      "resplitting_lorebook",
+    ].includes(state.status);
     const updateStatus = (status, message) => {
       state.status = status;
       state.statusMessage = message;
@@ -540,6 +583,7 @@
     });
 
     let sessionSaveTimer = null;
+    let sessionPersistChain = Promise.resolve();
     let lastSavedSession = restoredSession ? JSON.stringify(restoredSession) : JSON.stringify(null);
     let lastScheduledSession = "";
 
@@ -576,9 +620,11 @@
         lorebookSource: state.lorebookSource,
         sources: { ...state.sources },
         selectedConnectionId: state.selectedConnectionId,
+        analysisConnectionId: state.analysisConnectionId,
         draft: state.draft,
         excludedEntries: [...state.excludedEntries],
         excludedPresetCandidates: [...state.excludedPresetCandidates],
+        lorebookCharacterContext: state.lorebookCharacterContext,
         chatReferenceEnabled: state.chatReferenceEnabled,
         chatSourceMode: state.chatSourceMode,
         selectedChatId: state.selectedChatId,
@@ -592,6 +638,7 @@
         chatAnalysisMessage: state.chatAnalysisMessage,
         importedReference,
         lorebookSaveStrategy: state.lorebookSaveStrategy,
+        assetSaveScope: state.assetSaveScope,
         selectedLorebookId: state.selectedLorebookId,
         mergeDecisions: state.mergeDecisions,
         mergeAnalysisStatus: state.mergeAnalysisStatus,
@@ -653,6 +700,12 @@
       renderFooter();
     };
 
+    const queueSessionPersist = (payload, serialized) => {
+      const queued = sessionPersistChain.then(() => persistSession(payload, serialized));
+      sessionPersistChain = queued.catch(() => {});
+      return queued;
+    };
+
     const scheduleSessionSave = () => {
       if (!state.sessionHydrated) return;
       const payload = buildSessionPayload();
@@ -662,8 +715,20 @@
       if (sessionSaveTimer !== null) hostMarinara.clearTimeout(sessionSaveTimer);
       sessionSaveTimer = hostMarinara.setTimeout(() => {
         sessionSaveTimer = null;
-        void persistSession(JSON.parse(serialized), serialized);
+        void queueSessionPersist(JSON.parse(serialized), serialized);
       }, SESSION_SAVE_DEBOUNCE_MS);
+    };
+
+    const flushSessionSave = async () => {
+      if (!state.sessionHydrated) return;
+      if (sessionSaveTimer !== null) {
+        hostMarinara.clearTimeout(sessionSaveTimer);
+        sessionSaveTimer = null;
+      }
+      const payload = buildSessionPayload();
+      const serialized = JSON.stringify(payload);
+      lastScheduledSession = serialized;
+      await queueSessionPersist(payload, serialized);
     };
 
     const suggestedSavedDraftName = () => {
@@ -855,6 +920,59 @@
     };
 
     let replacementDialog = null;
+    let assetSaveDialog = null;
+
+    const closeAssetSaveDialog = (proceed) => {
+      if (!assetSaveDialog) return;
+      const { element, resolve, previousFocus } = assetSaveDialog;
+      assetSaveDialog = null;
+      element.remove();
+      if (!proceed && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+      resolve(proceed);
+    };
+
+    const confirmAssetSave = (scope) => {
+      if (assetSaveDialog) return Promise.resolve(false);
+      const scopeLabel = scope === "character"
+        ? "캐릭터만"
+        : scope === "lorebook"
+          ? "로어북만"
+          : "캐릭터와 로어북";
+      const scopeCopy = scope === "character"
+        ? "캐릭터만 생성·수정하며 로어북은 저장하지 않습니다."
+        : scope === "lorebook"
+          ? "로어북과 대상 항목만 저장하며 캐릭터는 생성·수정하지 않습니다."
+          : "캐릭터와 로어북을 저장하고 가능한 연결 작업을 수행합니다.";
+      return new Promise((resolve) => {
+        const overlay = createElement("div", { className: "pc-replace-overlay" });
+        const panel = createElement("section", { className: "pc-replace-dialog", role: "alertdialog" });
+        panel.setAttribute("aria-modal", "true");
+        panel.setAttribute("aria-labelledby", "pc-asset-save-title");
+        panel.setAttribute("aria-describedby", "pc-asset-save-copy");
+        panel.append(
+          createElement("h3", { id: "pc-asset-save-title", text: "Marinara 자산을 저장할까요?" }),
+          createElement("p", {
+            id: "pc-asset-save-copy",
+            text: `${scopeLabel} 저장을 실행합니다. ${scopeCopy} 프리셋 후보와 잔여 지침은 저장하지 않습니다.`,
+          }),
+        );
+        const actions = createElement("div", { className: "pc-replace-actions" });
+        const cancel = createElement("button", { className: "pc-button pc-button-secondary", type: "button", text: "취소" });
+        const save = createElement("button", { className: "pc-button pc-button-primary", type: "button", text: "저장" });
+        cancel.addEventListener("click", () => closeAssetSaveDialog(false));
+        save.addEventListener("click", () => closeAssetSaveDialog(true));
+        actions.append(cancel, save);
+        panel.append(actions);
+        overlay.append(panel);
+        root.append(overlay);
+        assetSaveDialog = {
+          element: overlay,
+          resolve,
+          previousFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+        };
+        save.focus();
+      });
+    };
     const closeReplacementDialog = (proceed) => {
       if (!replacementDialog) return;
       const { element, resolve, previousFocus } = replacementDialog;
@@ -913,11 +1031,24 @@
       state.selectedConnectionId = state.connections.some((connection) => connection.id === session.selectedConnectionId)
         ? session.selectedConnectionId
         : state.connections.find((connection) => connection.preferred)?.id || state.connections[0]?.id || "";
+      state.analysisConnectionId = state.connections.some((connection) => connection.id === session.analysisConnectionId)
+        ? session.analysisConnectionId
+        : state.selectedConnectionId;
+      state.draftReanalysisConnectionId = "";
+      state.lorebookResplitConnectionId = "";
       state.draft = session.draft;
       state.rawResponse = "";
       state.repairResponse = "";
       state.excludedEntries = new Set(session.excludedEntries);
       state.excludedPresetCandidates = new Set(session.excludedPresetCandidates);
+      state.lorebookResplitSelection = new Set();
+      state.lorebookCharacterContext = session.lorebookCharacterContext;
+      state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructions = "";
+      state.draftReanalysisPreserveLorebook = false;
+      state.draftReanalysisOpen = false;
+      state.lorebookReanalysisOpen = false;
+      state.postprocessKind = "";
       state.chatReferenceEnabled = session.chatReferenceEnabled;
       state.chatSourceMode = session.chatSourceMode;
       state.selectedChatId = session.selectedChatId;
@@ -931,6 +1062,7 @@
       state.chatAnalysisMessage = session.chatAnalysisMessage;
       state.importedReference = session.importedReference;
       state.lorebookSaveStrategy = session.lorebookSaveStrategy;
+      state.assetSaveScope = session.assetSaveScope;
       state.selectedLorebookId = session.selectedLorebookId;
       state.mergeDecisions = [...session.mergeDecisions];
       state.mergeAnalysisStatus = session.mergeAnalysisStatus;
@@ -990,6 +1122,17 @@
       state.repairResponse = "";
       state.excludedEntries = new Set();
       state.excludedPresetCandidates = new Set();
+      state.lorebookResplitSelection = new Set();
+      state.lorebookCharacterContext = false;
+      state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructions = "";
+      state.draftReanalysisPreserveLorebook = false;
+      state.draftReanalysisOpen = false;
+      state.lorebookReanalysisOpen = false;
+      state.analysisConnectionId = "";
+      state.draftReanalysisConnectionId = "";
+      state.lorebookResplitConnectionId = "";
+      state.postprocessKind = "";
       state.chatReferenceEnabled = false;
       state.chatSourceMode = "import";
       state.selectedChatId = "";
@@ -1006,6 +1149,7 @@
       state.lorebooksStatus = "idle";
       state.lorebooksMessage = "";
       state.lorebookSaveStrategy = "new";
+      state.assetSaveScope = "all";
       state.selectedLorebookId = "";
       state.existingEntries = [];
       state.existingEntriesStatus = "idle";
@@ -1054,9 +1198,20 @@
       state.lorebookSource = session.lorebookSource;
       state.sources = { ...session.sources };
       state.selectedConnectionId = session.selectedConnectionId;
+      state.analysisConnectionId = session.analysisConnectionId;
+      state.draftReanalysisConnectionId = "";
+      state.lorebookResplitConnectionId = "";
       state.draft = session.draft;
       state.excludedEntries = new Set(session.excludedEntries);
       state.excludedPresetCandidates = new Set(session.excludedPresetCandidates);
+      state.lorebookResplitSelection = new Set();
+      state.lorebookCharacterContext = session.lorebookCharacterContext;
+      state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructions = "";
+      state.draftReanalysisPreserveLorebook = false;
+      state.draftReanalysisOpen = false;
+      state.lorebookReanalysisOpen = false;
+      state.postprocessKind = "";
       state.chatReferenceEnabled = session.chatReferenceEnabled;
       state.chatSourceMode = session.chatSourceMode;
       state.selectedChatId = session.selectedChatId;
@@ -1070,6 +1225,7 @@
       state.chatAnalysisMessage = session.chatAnalysisMessage;
       state.importedReference = session.importedReference;
       state.lorebookSaveStrategy = session.lorebookSaveStrategy;
+      state.assetSaveScope = session.assetSaveScope;
       state.selectedLorebookId = session.selectedLorebookId;
       state.mergeDecisions = [...session.mergeDecisions];
       state.mergeAnalysisStatus = session.mergeAnalysisStatus;
@@ -1101,6 +1257,38 @@
     const selectedConnection = () =>
       state.connections.find((connection) => connection.id === state.selectedConnectionId) || null;
 
+    const connectionById = (connectionId) =>
+      state.connections.find((connection) => connection.id === connectionId) || null;
+
+    const analysisConnection = () =>
+      connectionById(state.analysisConnectionId) || selectedConnection();
+
+    const postprocessConnectionId = (overrideConnectionId) =>
+      connectionById(overrideConnectionId)?.id || analysisConnection()?.id || "";
+
+    const makePostprocessModelField = (value, assign, ariaLabel) => {
+      const field = createElement("label", { className: "pc-inline-model-field" });
+      const label = createElement("span", { className: "pc-inline-model-label", text: "모델" });
+      const select = createElement("select");
+      const inherited = analysisConnection();
+      select.setAttribute("aria-label", ariaLabel);
+      select.dataset.reviewTransient = "true";
+      select.append(option(
+        "",
+        inherited
+          ? `이전 분석 모델 그대로 사용 · ${inherited.model}`
+          : "이전 분석 모델을 사용할 수 없음",
+      ));
+      for (const connection of state.connections) {
+        select.append(option(connection.id, `${connection.model} · ${connection.name}`));
+      }
+      select.value = connectionById(value) ? value : "";
+      select.disabled = isWorking() || !state.connections.length;
+      select.addEventListener("change", () => assign(select.value));
+      field.append(label, select);
+      return field;
+    };
+
     const chatAnalysisPlan = () => {
       const turns = chatCore.selectedTurns(state.chatTurns, state.chatRangeMode, state.chatRecentTurns);
       const selectedTokens = turns.reduce((sum, turn) => sum + turn.estimatedTokens, 0);
@@ -1119,13 +1307,17 @@
       };
     };
 
-    const abortRun = (runId) =>
+    const abortRun = (runId, connectionId = state.activeGenerationConnectionId || state.selectedConnectionId) =>
       apiRequest("/api/generate/raw/abort", {
         method: "POST",
-        body: { runId, connectionId: state.selectedConnectionId },
+        body: { runId, connectionId },
       });
 
-    const generate = async (messages, runId) => {
+    const generate = async (messages, runId, connectionId = state.selectedConnectionId) => {
+      const activeConnectionId = connectionById(connectionId)?.id || "";
+      if (!activeConnectionId) throw new Error("사용할 AI 모델 연결을 선택하세요.");
+      state.activeGenerationConnectionId = activeConnectionId;
+      await flushSessionSave();
       const controller = new AbortController();
       const timeoutSeconds = state.settings.responseTimeoutSeconds;
       let timedOut = false;
@@ -1133,7 +1325,7 @@
         ? hostMarinara.setTimeout(() => {
             timedOut = true;
             controller.abort();
-            void abortRun(runId).catch(() => {});
+            void abortRun(runId, activeConnectionId).catch(() => {});
           }, timeoutSeconds * 1000)
         : null;
       const parameters = core.buildGenerationParameters(state.settings);
@@ -1142,7 +1334,7 @@
           method: "POST",
           signal: controller.signal,
           body: {
-            connectionId: state.selectedConnectionId,
+            connectionId: activeConnectionId,
             messages,
             ...(parameters ? { parameters } : {}),
             streaming: false,
@@ -1170,6 +1362,8 @@
         loading_connections: "연결 불러오는 중",
         analyzing: state.abortRequested ? "취소 요청 중" : "AI 분석 중",
         analyzing_merge: state.abortRequested ? "취소 요청 중" : "AI 병합 분석 중",
+        reanalyzing_draft: state.abortRequested ? "취소 요청 중" : "작업 결과 재분석 중",
+        resplitting_lorebook: state.abortRequested ? "취소 요청 중" : "로어북 다시 나누는 중",
         extracting_chat: state.abortRequested ? "취소 요청 중" : "대화 후보 추출 중",
         reducing_chat: state.abortRequested ? "취소 요청 중" : "대화 분석 통합 중",
         success: "분석 완료",
@@ -1215,7 +1409,7 @@
         return;
       }
       if (!state.selectedConnectionId) {
-        updateStatus("generation_error", "텍스트 생성용 LLM 연결을 선택하세요.");
+        updateStatus("generation_error", "텍스트 생성용 AI 모델 연결을 선택하세요.");
         render();
         return;
       }
@@ -1229,6 +1423,7 @@
       const requestNumber = state.activeRequest + 1;
       state.activeRequest = requestNumber;
       state.abortRequested = false;
+      state.postprocessKind = "";
       state.rawResponse = "";
       state.repairResponse = "";
       state.activeRunId = createRunId();
@@ -1303,7 +1498,17 @@
         state.navigationView = "workspace";
         state.excludedEntries = new Set();
         state.excludedPresetCandidates = new Set();
+        state.lorebookResplitSelection = new Set();
+        state.draftReanalysisInstructionsEnabled = false;
+        state.draftReanalysisInstructions = "";
+        state.draftReanalysisPreserveLorebook = false;
+        state.draftReanalysisOpen = false;
+        state.lorebookReanalysisOpen = false;
+        state.analysisConnectionId = state.selectedConnectionId;
+        state.draftReanalysisConnectionId = "";
+        state.lorebookResplitConnectionId = "";
         state.lorebookSaveStrategy = "new";
+        state.assetSaveScope = "all";
         state.selectedLorebookId = "";
         state.existingEntries = [];
         state.existingEntriesStatus = "idle";
@@ -1328,6 +1533,204 @@
           updateStatus("generation_error", error instanceof Error ? error.message : String(error));
         }
         render();
+      }
+    };
+
+    const finishPostprocessError = (requestNumber, error, cancelledMessage) => {
+      if (requestNumber !== state.activeRequest) return;
+      state.activeRunId = "";
+      if (state.abortRequested || error?.name === "AbortError") {
+        updateStatus("aborted", cancelledMessage);
+      } else {
+        updateStatus(
+          error instanceof core.DraftValidationError ? "validation_error" : "generation_error",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      render();
+    };
+
+    const preparePostprocess = (kind, status, message) => {
+      const requestNumber = state.activeRequest + 1;
+      state.activeRequest = requestNumber;
+      state.abortRequested = false;
+      state.postprocessKind = kind;
+      state.assetSaveConfirmed = false;
+      updateStatus(status, message);
+      render();
+      return requestNumber;
+    };
+
+    const completePostprocess = (message) => {
+      state.activeRunId = "";
+      state.assetSaveConfirmed = false;
+      state.assetSaveMessage = "";
+      state.sessionTouched = true;
+      invalidateMergeAnalysis("AI 후처리로 초안이 변경되어 병합 분석을 다시 실행해야 합니다.");
+      updateStatus("success", message);
+      render();
+    };
+
+    const reanalyzeCurrentDraft = async () => {
+      if (isWorking() || !state.draft) return;
+      const connectionId = postprocessConnectionId(state.draftReanalysisConnectionId);
+      if (!connectionId) {
+        state.postprocessKind = "draft";
+        updateStatus("generation_error", "작업 결과 재분석에 사용할 AI 모델을 선택하세요.");
+        render();
+        return;
+      }
+      const proceed = await guardWorkingReplacement({
+        message: "작업 결과 재분석은 현재 검토 초안 전체를 재분석 결과로 교체합니다.",
+        saveLabel: "저장 후 작업 결과 재분석",
+        discardLabel: "저장하지 않고 작업 결과 재분석",
+      });
+      if (!proceed || isWorking() || !state.draft) return;
+      const currentDraft = cloneJson(state.draft);
+      const preserveLorebook = state.draftReanalysisPreserveLorebook;
+      const requestNumber = preparePostprocess(
+        "draft",
+        "reanalyzing_draft",
+        "현재 검토 초안만 다시 검토하고 정리하고 있습니다. 원본과 대화 자료는 전송하지 않습니다.",
+      );
+      try {
+        const analyzedDraft = await generateValidatedChatJson(
+          core.buildDraftReanalysisMessages(currentDraft, state.settings, {
+            userInstructions: state.draftReanalysisInstructionsEnabled
+              ? state.draftReanalysisInstructions.trim()
+              : "",
+            preserveLorebook,
+          }),
+          core.parseDraftResponse,
+          "작업 결과 재분석",
+          requestNumber,
+          connectionId,
+        );
+        if (requestNumber !== state.activeRequest) return;
+        const nextDraft = preserveLorebook
+          ? { ...analyzedDraft, lorebook: currentDraft.lorebook }
+          : analyzedDraft;
+        state.draft = nextDraft;
+        state.excludedEntries = new Set();
+        state.excludedPresetCandidates = new Set();
+        state.lorebookResplitSelection = new Set();
+        completePostprocess("현재 검토 초안을 다시 분석해 검증된 결과로 교체했습니다.");
+      } catch (error) {
+        finishPostprocessError(requestNumber, error, "작업 결과 재분석을 취소했습니다. 기존 검토 초안은 유지됩니다.");
+      }
+    };
+
+    const resplitLorebook = async (entryIndexes = []) => {
+      if (isWorking() || !state.draft) return;
+      const entryCount = state.draft.lorebook.entries.length;
+      const selectedIndexes = [...new Set(entryIndexes)]
+        .filter((index) => Number.isInteger(index) && index >= 0 && index < entryCount)
+        .sort((left, right) => left - right);
+      if (!selectedIndexes.length) {
+        state.postprocessKind = "entry";
+        updateStatus("validation_error", "다시 나눌 로어북 항목을 하나 이상 선택하세요.");
+        render();
+        return;
+      }
+      const wholeLorebook = selectedIndexes.length === entryCount;
+      const connectionId = postprocessConnectionId(state.lorebookResplitConnectionId);
+      if (!connectionId) {
+        state.postprocessKind = wholeLorebook ? "lorebook" : "entry";
+        updateStatus("generation_error", "로어북 다시 나누기에 사용할 AI 모델을 선택하세요.");
+        render();
+        return;
+      }
+      const proceed = await guardWorkingReplacement({
+        message: wholeLorebook
+          ? "현재 로어북 초안 전체를 AI가 다시 나눈 결과로 교체합니다."
+          : `선택한 ${selectedIndexes.length}개 항목을 각각 AI가 만든 하나 이상의 항목으로 교체합니다.`,
+        saveLabel: wholeLorebook ? "저장 후 로어북 다시 나누기" : "저장 후 선택 항목 다시 나누기",
+        discardLabel: wholeLorebook ? "저장하지 않고 로어북 다시 나누기" : "저장하지 않고 선택 항목 다시 나누기",
+      });
+      if (!proceed || isWorking() || !state.draft) return;
+      const currentDraft = cloneJson(state.draft);
+      const requestNumber = preparePostprocess(
+        wholeLorebook ? "lorebook" : "entry",
+        "resplitting_lorebook",
+        wholeLorebook
+          ? "현재 로어북 초안만 더 적절한 항목 단위로 나누고 있습니다."
+          : `선택한 ${selectedIndexes.length}개 항목을 순서대로 다시 나누고 있습니다.`,
+      );
+      try {
+        let nextDraft = currentDraft;
+        let nextExcludedEntries = new Set(state.excludedEntries);
+        let replacementCount = 0;
+        if (wholeLorebook) {
+          const nextLorebook = await generateValidatedChatJson(
+            core.buildLorebookResplitMessages(currentDraft.lorebook, state.settings, {
+              scope: "all",
+              characterContext: state.lorebookCharacterContext ? currentDraft.character : null,
+            }),
+            (raw) => {
+              const lorebook = core.parseLorebookResponse(raw);
+              if (currentDraft.lorebook.entries.length && !lorebook.entries.length) {
+                throw new core.DraftValidationError("다시 나누기 결과에는 하나 이상의 로어북 항목이 필요합니다.");
+              }
+              return lorebook;
+            },
+            "로어북 다시 나누기",
+            requestNumber,
+            connectionId,
+          );
+          nextDraft = core.applyLorebookResult(currentDraft, nextLorebook);
+          nextExcludedEntries = new Set();
+          replacementCount = nextLorebook.entries.length;
+        } else {
+          const descendingIndexes = [...selectedIndexes].sort((left, right) => right - left);
+          for (const [position, entryIndex] of descendingIndexes.entries()) {
+            state.statusMessage = `선택한 ${selectedIndexes.length}개 중 ${position + 1}번째 항목을 다시 나누고 있습니다.`;
+            render();
+            const targetLorebook = {
+              ...currentDraft.lorebook,
+              entries: [currentDraft.lorebook.entries[entryIndex]],
+            };
+            const nextLorebook = await generateValidatedChatJson(
+              core.buildLorebookResplitMessages(targetLorebook, state.settings, {
+                scope: "entry",
+                characterContext: state.lorebookCharacterContext ? currentDraft.character : null,
+              }),
+              (raw) => {
+                const lorebook = core.parseLorebookResponse(raw);
+                if (!lorebook.entries.length) {
+                  throw new core.DraftValidationError("다시 나누기 결과에는 하나 이상의 로어북 항목이 필요합니다.");
+                }
+                return lorebook;
+              },
+              `로어북 항목 ${entryIndex + 1} 다시 나누기`,
+              requestNumber,
+              connectionId,
+            );
+            nextDraft = core.applyLorebookResult(nextDraft, nextLorebook, { entryIndex });
+            nextExcludedEntries = new Set(core.remapIndexesAfterEntryReplacement(
+              nextExcludedEntries,
+              entryIndex,
+              nextLorebook.entries.length,
+            ));
+            replacementCount += nextLorebook.entries.length;
+          }
+        }
+        if (requestNumber !== state.activeRequest) return;
+        state.draft = nextDraft;
+        state.excludedEntries = nextExcludedEntries;
+        state.lorebookResplitSelection = new Set();
+        completePostprocess(
+          wholeLorebook
+            ? `로어북 초안을 ${replacementCount}개의 검증된 항목으로 다시 나눴습니다.`
+            : `선택한 ${selectedIndexes.length}개 항목을 ${replacementCount}개의 검증된 항목으로 교체했습니다.`,
+        );
+      } catch (error) {
+        finishPostprocessError(
+          requestNumber,
+          error,
+          wholeLorebook
+            ? "로어북 다시 나누기를 취소했습니다. 기존 로어북 초안은 유지됩니다."
+            : "선택 항목 다시 나누기를 취소했습니다. 기존 로어북 초안은 유지됩니다.",
+        );
       }
     };
 
@@ -1562,6 +1965,8 @@
       const createdCount = result.entryResults.filter((item) => item.type === "create" && item.status === "success").length;
       const updatedCount = result.entryResults.filter((item) => item.type === "update" && item.status === "success").length;
       const failures = saveResultFailures(result);
+      const hasSuccess = [result.character, result.lorebook, result.link].some((part) => part.status === "success") ||
+        result.entryResults.some((item) => item.status === "success");
       const statusLabel = (status) => ({
         idle: "대기",
         pending: "저장 중",
@@ -1569,13 +1974,17 @@
         failed: "실패",
         skipped: "제외",
       })[status] || status;
-      wrapper.dataset.state = failures.length ? "partial" : saveResultComplete(result) ? "success" : "pending";
+      wrapper.dataset.state = failures.length || (hasSuccess && !saveResultComplete(result))
+        ? "partial"
+        : saveResultComplete(result) ? "success" : "pending";
       wrapper.append(createElement("h4", { text: failures.length ? "부분 저장 결과" : "저장 결과" }));
       const summary = createElement("dl", { className: "pc-save-summary" });
       for (const [label, value] of [
         ["캐릭터", result.character.status === "success" ? `${result.character.name} · ${result.character.id}` : statusLabel(result.character.status)],
         ["로어북", result.lorebook.status === "success" ? `${result.lorebook.name} · ${result.lorebook.id}` : statusLabel(result.lorebook.status)],
-        ["연결", result.link.status === "skipped" ? "해당 없음" : statusLabel(result.link.status)],
+        ["연결", result.link.status === "skipped"
+          ? result.link.reason === "character_unavailable" ? "보류" : "해당 없음"
+          : statusLabel(result.link.status)],
         ["신규 항목", `${createdCount}개`],
         ["수정 항목", `${updatedCount}개`],
       ]) {
@@ -1609,7 +2018,7 @@
       try {
         await abortRun(runId);
       } catch (error) {
-        if (["analyzing", "analyzing_merge"].includes(state.status)) {
+        if (["analyzing", "analyzing_merge", "reanalyzing_draft", "resplitting_lorebook"].includes(state.status)) {
           state.abortRequested = false;
           updateStatus("generation_error", `취소 요청에 실패했습니다: ${error instanceof Error ? error.message : String(error)}`);
           render();
@@ -1684,7 +2093,7 @@
         applyConversationMessages(messages, {
           id: chatId,
           name: chat ? chatCore.availableChatLabel(chat) : "선택한 채팅방",
-          emptyMessage: "선택한 채팅방에 분석 가능한 User/Assistant 대화가 없습니다.",
+          emptyMessage: "선택한 채팅방에 분석 가능한 사용자/AI 응답 대화가 없습니다.",
         });
       } catch (error) {
         state.chatId = "";
@@ -1721,12 +2130,18 @@
     const loadConversationSource = () =>
       state.chatSourceMode === "chat" ? loadChatList() : loadImportedConversation();
 
-    const generateValidatedChatJson = async (messages, parser, label, requestNumber) => {
+    const generateValidatedChatJson = async (
+      messages,
+      parser,
+      label,
+      requestNumber,
+      connectionId = state.selectedConnectionId,
+    ) => {
       let requestMessages = messages;
       let lastError = null;
       for (let attempt = 0; attempt <= state.settings.jsonRepairRetries; attempt += 1) {
         state.activeRunId = createRunId();
-        const result = await generate(requestMessages, state.activeRunId);
+        const result = await generate(requestMessages, state.activeRunId, connectionId);
         if (requestNumber !== state.activeRequest) throw new DOMException("Superseded", "AbortError");
         if (result?.aborted || state.abortRequested) throw new DOMException("Aborted", "AbortError");
         if (!result || typeof result.content !== "string") throw new Error(`${label} API가 내용(content) 문자열을 반환하지 않았습니다.`);
@@ -1753,7 +2168,7 @@
     const analyzeConversation = async () => {
       if (isWorking()) return;
       if (!state.selectedConnectionId) {
-        updateStatus("generation_error", "대화 분석에 사용할 LLM 연결을 선택하세요.");
+        updateStatus("generation_error", "대화 분석에 사용할 AI 모델 연결을 선택하세요.");
         render();
         return;
       }
@@ -1833,7 +2248,7 @@
           reduceInputs.length > 1 &&
           chatCore.estimateTokens(JSON.stringify(reduceInputs)) > plan.chunkBudget
         ) {
-          intermediateWarnings.push("단계별 통합의 안전 한도에 도달했습니다. 더 큰 컨텍스트의 LLM 연결을 사용하거나 대화 범위를 줄이세요.");
+          intermediateWarnings.push("단계별 통합의 안전 한도에 도달했습니다. 더 큰 문맥을 지원하는 AI 모델 연결을 사용하거나 대화 범위를 줄이세요.");
         }
         updateStatus("reducing_chat", "대화 구간 결과를 편집 가능한 대화 분석 프롬프트로 통합하고 있습니다.");
         render();
@@ -2001,7 +2416,7 @@
             settings.preserveLanguageSpecificExpressions = checked;
             render();
           },
-          "OFF가 기본입니다. ON이면 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현만 영어 설명과 원어를 함께 보존합니다.",
+          "기본값은 끔입니다. 켜면 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현만 영어 설명과 원어를 함께 보존합니다.",
         ),
       );
       container.append(language);
@@ -2060,7 +2475,7 @@
         role: "group",
         ariaLabel: "대화 내역 참조 사용 여부",
       });
-      for (const [value, label] of [[false, "OFF"], [true, "ON"]]) {
+      for (const [value, label] of [[false, "끔"], [true, "켬"]]) {
         const button = createElement("button", { type: "button", text: label });
         button.dataset.selected = String(state.chatReferenceEnabled === value);
         button.setAttribute("aria-pressed", String(state.chatReferenceEnabled === value));
@@ -2346,8 +2761,8 @@
       conversionSection.append(createElement("h3", { text: "3. 변환 방식" }));
       const conversionMode = createElement("div", { className: "pc-segmented", role: "group", ariaLabel: "프롬프트 이식 변환 방식" });
       for (const [value, label] of [
-        ["preserve", "원본 보존 (Preserve)"],
-        ["normalize", "자연어 최적화 (Normalize)"],
+        ["preserve", "원본 보존"],
+        ["normalize", "자연어 최적화"],
       ]) {
         const button = createElement("button", { type: "button", text: label });
         button.dataset.selected = String(state.conversionMode === value);
@@ -2371,10 +2786,10 @@
       );
 
       const connectionSection = createElement("section", { className: "pc-section" });
-      connectionSection.append(createElement("h3", { text: "4. LLM 연결" }));
+      connectionSection.append(createElement("h3", { text: "4. AI 모델 연결" }));
       const connectionRow = createElement("div", { className: "pc-connection-row" });
       const connectionSelect = createElement("select");
-      connectionSelect.setAttribute("aria-label", "LLM 연결");
+      connectionSelect.setAttribute("aria-label", "AI 모델 연결");
       if (state.connections.length === 0) {
         connectionSelect.append(option("", state.status === "loading_connections" ? "불러오는 중…" : "사용 가능한 연결 없음"));
       } else {
@@ -2620,7 +3035,7 @@
       if (isWorking() || state.lorebookSaveStrategy !== "merge") return;
       if (!state.selectedConnectionId) {
         state.mergeAnalysisStatus = "error";
-        state.mergeAnalysisMessage = "AI 병합 분석에 사용할 LLM 연결을 선택하세요.";
+        state.mergeAnalysisMessage = "AI 병합 분석에 사용할 모델 연결을 선택하세요.";
         render();
         return;
       }
@@ -2743,7 +3158,7 @@
       }
     };
 
-    const currentSaveFingerprint = () => {
+    const currentSaveFingerprints = () => {
       const strategy = state.lorebookSaveStrategy;
       const activeEntries = (state.draft?.lorebook?.entries || []).flatMap((entry, index) =>
         state.excludedEntries.has(index)
@@ -2761,24 +3176,39 @@
                 : null,
             }],
       );
-      return assetCore.reviewFingerprint({
-        character: assetCore.buildCharacterPayload(state.draft),
-        lorebook: strategy === "new"
-          ? {
-              name: state.draft?.lorebook?.name || "",
-              description: state.draft?.lorebook?.description || "",
-              category: "character",
-              isGlobal: false,
-            }
-          : { id: state.selectedLorebookId },
+      const character = assetCore.buildCharacterPayload(state.draft);
+      const lorebook = strategy === "new"
+        ? {
+            name: state.draft?.lorebook?.name || "",
+            description: state.draft?.lorebook?.description || "",
+            category: "character",
+            isGlobal: false,
+          }
+        : { id: state.selectedLorebookId };
+      const all = assetCore.reviewFingerprint({
+        character,
+        lorebook,
         strategy,
         activeEntries,
       });
+      const characterFingerprint = assetCore.reviewFingerprint({ character });
+      const lorebookFingerprint = assetCore.reviewFingerprint({ lorebook, strategy, activeEntries });
+      return {
+        all,
+        character: characterFingerprint,
+        lorebook: lorebookFingerprint,
+        link: assetCore.reviewFingerprint({ characterFingerprint, lorebookFingerprint }),
+      };
     };
 
-    const emptySavePart = (name = "") => ({ status: "idle", id: "", name, error: "" });
-    const createSaveResult = (fingerprint, strategy) => ({
-      fingerprint,
+    const currentSaveFingerprint = () => currentSaveFingerprints().all;
+
+    const emptySavePart = (name = "") => ({ status: "idle", id: "", name, reason: "", error: "" });
+    const createSaveResult = (fingerprints, strategy) => ({
+      fingerprint: fingerprints.all,
+      characterFingerprint: fingerprints.character,
+      lorebookFingerprint: fingerprints.lorebook,
+      linkFingerprint: fingerprints.link,
       strategy,
       character: emptySavePart(state.draft?.character?.name || ""),
       lorebook: emptySavePart(state.draft?.lorebook?.name || ""),
@@ -2786,6 +3216,32 @@
       entryResults: [],
       completedAt: "",
     });
+
+    const reconcileSaveResult = (fingerprints, strategy) => {
+      const previous = state.assetSaveResult;
+      if (!previous) return createSaveResult(fingerprints, strategy);
+      const legacyMatch = !previous.characterFingerprint && previous.fingerprint === fingerprints.all;
+      const characterMatches = legacyMatch || previous.characterFingerprint === fingerprints.character;
+      const lorebookMatches = legacyMatch || previous.lorebookFingerprint === fingerprints.lorebook;
+      const linkMatches = legacyMatch || previous.linkFingerprint === fingerprints.link;
+      return {
+        ...previous,
+        fingerprint: fingerprints.all,
+        characterFingerprint: fingerprints.character,
+        lorebookFingerprint: fingerprints.lorebook,
+        linkFingerprint: fingerprints.link,
+        strategy,
+        character: characterMatches
+          ? previous.character
+          : emptySavePart(state.draft?.character?.name || ""),
+        lorebook: lorebookMatches
+          ? previous.lorebook
+          : emptySavePart(state.draft?.lorebook?.name || ""),
+        link: linkMatches ? previous.link : emptySavePart(),
+        entryResults: lorebookMatches ? previous.entryResults : [],
+        completedAt: characterMatches && lorebookMatches && linkMatches ? previous.completedAt : "",
+      };
+    };
 
     const resultForOperation = (result, operation, type) => {
       let item = result.entryResults.find((candidate) => candidate.key === operation.key);
@@ -2804,25 +3260,42 @@
       return item;
     };
 
-    const saveResultFailures = (result) => {
+    const saveResultFailures = (result, scope = "all") => {
       if (!result) return [];
       const failures = [];
-      for (const [label, part] of [["캐릭터", result.character], ["로어북", result.lorebook], ["캐릭터-로어북 연결", result.link]]) {
+      const parts = scope === "character"
+        ? [["캐릭터", result.character]]
+        : scope === "lorebook"
+          ? [["로어북", result.lorebook], ["캐릭터-로어북 연결", result.link]]
+          : [["캐릭터", result.character], ["로어북", result.lorebook], ["캐릭터-로어북 연결", result.link]];
+      for (const [label, part] of parts) {
         if (part?.status === "failed") failures.push({ name: label, error: part.error });
       }
-      for (const entry of result.entryResults) {
-        if (entry.status === "failed") failures.push({ name: entry.name || entry.key, error: entry.error });
+      if (scope !== "character") {
+        for (const entry of result.entryResults) {
+          if (entry.status === "failed") failures.push({ name: entry.name || entry.key, error: entry.error });
+        }
       }
       return failures;
     };
 
-    const saveResultComplete = (result) =>
-      !!result &&
-      result.character.status === "success" &&
-      result.lorebook.status === "success" &&
-      (result.link.status === "success" || result.link.status === "skipped") &&
-      result.entryResults.every((item) => item.status === "success" || item.status === "skipped") &&
-      saveResultFailures(result).length === 0;
+    const saveResultComplete = (result, scope = "all", fingerprints = null) => {
+      if (!result) return false;
+      const legacyMatch = fingerprints && !result.characterFingerprint && result.fingerprint === fingerprints.all;
+      const characterCurrent = !fingerprints || legacyMatch || result.characterFingerprint === fingerprints.character;
+      const lorebookCurrent = !fingerprints || legacyMatch || result.lorebookFingerprint === fingerprints.lorebook;
+      const linkCurrent = !fingerprints || legacyMatch || result.linkFingerprint === fingerprints.link;
+      const characterComplete = characterCurrent && result.character.status === "success";
+      const lorebookComplete = lorebookCurrent && linkCurrent &&
+        result.lorebook.status === "success" &&
+        (result.link.status === "success" || result.link.status === "skipped") &&
+        result.entryResults.every((item) => item.status === "success" || item.status === "skipped");
+      if (scope === "character") return characterComplete && saveResultFailures(result, scope).length === 0;
+      if (scope === "lorebook") return lorebookComplete && saveResultFailures(result, scope).length === 0;
+      const combinedLinkComplete = result.link.status === "success" ||
+        (result.link.status === "skipped" && result.link.reason !== "character_unavailable");
+      return characterComplete && lorebookComplete && combinedLinkComplete && saveResultFailures(result, scope).length === 0;
+    };
 
     const reconcileBulkCreateFailure = async (lorebookId, baselineIds, operations, errorMessage, result) => {
       let currentEntries = [];
@@ -2849,16 +3322,18 @@
       state.existingEntries = currentEntries;
     };
 
-    const executeAssetSave = async () => {
+    const executeAssetSave = async (scope = "all") => {
       if (state.assetSaving || !state.draft || !state.assetSaveConfirmed) return;
+      if (!assetCore.SAVE_SCOPES.includes(scope)) return;
       const strategy = state.lorebookSaveStrategy;
-      if (strategy === "merge" && !mergeAnalysisReady()) {
+      const includeLorebook = scope === "lorebook" || scope === "all";
+      if (includeLorebook && strategy === "merge" && !mergeAnalysisReady()) {
         state.assetSaveMessage = "현재 초안과 기존 로어북에 대한 AI 병합 분석을 먼저 완료하세요.";
         state.assetSaveConfirmed = false;
         render();
         return;
       }
-      if (strategy !== "new") {
+      if (includeLorebook && strategy !== "new") {
         if (state.lorebooksStatus !== "success") {
           state.assetSaveMessage = "기존 로어북 목록을 먼저 불러오세요.";
           render();
@@ -2882,6 +3357,7 @@
         selectedLorebookId: state.selectedLorebookId,
         existingEntries: state.existingEntries,
         mergeDecisions: state.mergeDecisions,
+        scope,
       });
       if (plan.errors.length) {
         state.assetSaveMessage = plan.errors.join(" ");
@@ -2889,23 +3365,26 @@
         return;
       }
 
-      const fingerprint = currentSaveFingerprint();
-      if (state.assetSaveResult?.fingerprint === fingerprint && saveResultComplete(state.assetSaveResult)) {
-        state.assetSaveMessage = "이 검토 상태는 이미 저장되었습니다. 새로 저장하려면 검토 내용을 변경하고 다시 확인하세요.";
+      const fingerprints = currentSaveFingerprints();
+      if (saveResultComplete(state.assetSaveResult, scope, fingerprints)) {
+        state.assetSaveMessage = "선택한 저장 범위는 이미 저장되었습니다. 새로 저장하려면 해당 검토 내용을 변경하고 다시 확인하세요.";
         state.assetSaveConfirmed = false;
         render();
         return;
       }
-      const result = state.assetSaveResult?.fingerprint === fingerprint
-        ? state.assetSaveResult
-        : createSaveResult(fingerprint, strategy);
+      const result = reconcileSaveResult(fingerprints, strategy);
       state.assetSaveResult = result;
       state.assetSaving = true;
-      state.assetSaveMessage = "Marinara 자산을 저장하는 중입니다.";
+      state.assetSaveActiveScope = scope;
+      state.assetSaveMessage = scope === "character"
+        ? "캐릭터를 저장하는 중입니다."
+        : scope === "lorebook"
+          ? "로어북과 대상 항목을 저장하는 중입니다."
+          : "캐릭터와 로어북 자산을 저장하는 중입니다.";
       render();
 
       try {
-        if (result.character.status !== "success" || !result.character.id) {
+        if (plan.includeCharacter && (result.character.status !== "success" || !result.character.id)) {
           result.character.status = "pending";
           result.character.error = "";
           render();
@@ -2927,6 +3406,7 @@
           }
         }
 
+        if (plan.includeLorebook) {
         if (strategy === "new") {
           if (result.lorebook.status !== "success" || !result.lorebook.id) {
             result.lorebook.status = "pending";
@@ -2935,7 +3415,10 @@
             try {
               const createdLorebook = await apiRequest("/api/lorebooks", {
                 method: "POST",
-                body: assetCore.buildLorebookPayload(state.draft, result.character.id),
+                body: assetCore.buildLorebookPayload(
+                  state.draft,
+                  result.character.status === "success" ? result.character.id : "",
+                ),
               });
               if (!createdLorebook || typeof createdLorebook.id !== "string" || !createdLorebook.id) {
                 throw new Error("로어북 생성 API가 ID를 반환하지 않았습니다.");
@@ -2967,15 +3450,25 @@
           : state.lorebooks.find((book) => book.id === state.selectedLorebookId);
         const canEmbedLorebook = selectedLorebook?.category === "character" &&
           !selectedLorebook.personaId && !(selectedLorebook.personaIds?.length);
-        if (!canEmbedLorebook) {
+        if (!result.character.id || result.character.status !== "success") {
           result.link = {
             status: "skipped",
             id: result.lorebook.id,
             name: result.lorebook.name,
+            reason: "character_unavailable",
+            error: "저장된 캐릭터가 없어 로어북과 항목만 저장했습니다. 캐릭터를 저장한 뒤 전체 저장으로 연결할 수 있습니다.",
+          };
+        } else if (!canEmbedLorebook) {
+          result.link = {
+            status: "skipped",
+            id: result.lorebook.id,
+            name: result.lorebook.name,
+            reason: "incompatible_lorebook",
             error: "선택한 로어북 종류는 캐릭터 카드에 연결할 수 없어 항목 저장만 진행했습니다.",
           };
         } else if (result.link.status !== "success") {
           result.link.status = "pending";
+          result.link.reason = "";
           result.link.error = "";
           render();
           try {
@@ -2983,7 +3476,7 @@
               method: "POST",
               body: { lorebookId: result.lorebook.id },
             });
-            result.link = { status: "success", id: result.lorebook.id, name: result.lorebook.name, error: "" };
+            result.link = { status: "success", id: result.lorebook.id, name: result.lorebook.name, reason: "", error: "" };
           } catch (error) {
             result.link.status = "failed";
             result.link.error = error instanceof Error ? error.message : String(error);
@@ -3069,6 +3562,7 @@
             item.error = error instanceof Error ? error.message : String(error);
           }
         }
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         for (const part of [result.character, result.lorebook, result.link]) {
@@ -3088,13 +3582,30 @@
         state.assetSaving = false;
         state.assetSaveConfirmed = false;
         result.completedAt = new Date().toISOString();
-        const failures = saveResultFailures(result);
+        const failures = saveResultFailures(result, scope);
         const successfulEntries = result.entryResults.filter((item) => item.status === "success").length;
-        state.assetSaveMessage = failures.length
-          ? `${successfulEntries}개 항목 저장 완료, ${failures.length}개 항목 실패. 실패 항목만 재시도할 수 있습니다.`
-          : `${successfulEntries}개 항목과 캐릭터·로어북 저장을 완료했습니다.`;
+        if (failures.length) {
+          state.assetSaveMessage = scope === "character"
+            ? `캐릭터 저장에 실패했습니다. 실패한 캐릭터만 재시도할 수 있습니다.`
+            : `${successfulEntries}개 항목 저장 완료, ${failures.length}개 대상 실패. 실패 대상만 재시도할 수 있습니다.`;
+        } else if (scope === "character") {
+          state.assetSaveMessage = "캐릭터 저장을 완료했습니다.";
+        } else if (scope === "lorebook") {
+          state.assetSaveMessage = `${successfulEntries}개 항목과 로어북 저장을 완료했습니다.`;
+        } else {
+          state.assetSaveMessage = `${successfulEntries}개 항목과 캐릭터·로어북 저장을 완료했습니다.`;
+        }
+        state.assetSaveActiveScope = "";
         render();
       }
+    };
+
+    const requestAssetSave = async () => {
+      if (state.assetSaving || isWorking() || !state.draft) return;
+      const scope = assetCore.SAVE_SCOPES.includes(state.assetSaveScope) ? state.assetSaveScope : "all";
+      if (!(await confirmAssetSave(scope))) return;
+      state.assetSaveConfirmed = true;
+      await executeAssetSave(scope);
     };
 
     const savedDraftStatus = (draft) => {
@@ -3138,6 +3649,18 @@
           text: "저장된 초안은 자동 삭제되지 않으며, 직접 삭제해야 합니다.",
         }),
       );
+      if (state.activeSavedDraftId && sessionHasWork()) {
+        const toolbar = createElement("div", { className: "pc-saved-drafts-toolbar" });
+        const saveAsNew = createElement("button", {
+          className: "pc-button pc-button-secondary pc-button-small",
+          type: "button",
+          text: "새 초안으로 저장",
+        });
+        saveAsNew.disabled = state.savedDraftBusy || isWorking();
+        saveAsNew.addEventListener("click", () => void saveCurrentDraft());
+        toolbar.append(saveAsNew);
+        section.append(toolbar);
+      }
       const list = createElement("div", { className: "pc-saved-draft-list", id: "pc-saved-draft-list" });
       if (!state.savedDrafts.length) {
         list.append(createElement("div", { className: "pc-saved-drafts-empty", text: "저장된 초안이 없습니다." }));
@@ -3200,6 +3723,116 @@
       const draft = state.draft;
       const container = createElement("div", { className: "pc-review-view" });
       container.append(renderSavedDraftsPanel());
+
+      const postprocess = createElement("details", {
+        className: "pc-review-section pc-collapsible-review pc-postprocess-section",
+      });
+      postprocess.open = state.draftReanalysisOpen;
+      postprocess.addEventListener("toggle", () => {
+        state.draftReanalysisOpen = postprocess.open;
+      });
+      postprocess.append(createElement("summary", { text: "작업 결과 재분석" }));
+      const postprocessBody = createElement("div", { className: "pc-collapsible-review-body" });
+      postprocessBody.append(
+        createElement("p", {
+          className: "pc-section-copy",
+          text: "현재 검토 초안만 다시 검토·정리합니다. 최초 원본, 별도 로어북 원본, 대화 자료는 보내지 않으며 누락된 원본 정보를 복구하는 기능이 아닙니다.",
+        }),
+      );
+      const postprocessOptions = createElement("div", { className: "pc-postprocess-options" });
+      const postprocessToggles = createElement("div", { className: "pc-postprocess-toggles" });
+      const reanalysisInstructionsOption = createElement("label", {
+        className: "pc-setting-toggle pc-postprocess-instructions-toggle",
+      });
+      const reanalysisInstructionsInput = createElement("input");
+      reanalysisInstructionsInput.type = "checkbox";
+      reanalysisInstructionsInput.checked = state.draftReanalysisInstructionsEnabled;
+      reanalysisInstructionsInput.disabled = isWorking();
+      reanalysisInstructionsInput.dataset.reviewTransient = "true";
+      reanalysisInstructionsInput.addEventListener("change", () => {
+        state.draftReanalysisInstructionsEnabled = reanalysisInstructionsInput.checked;
+        render();
+      });
+      reanalysisInstructionsOption.append(
+        reanalysisInstructionsInput,
+        createElement("span", { text: "사용자 지침 추가" }),
+      );
+      const preserveLorebookOption = createElement("label", {
+        className: "pc-setting-toggle pc-postprocess-preserve-lorebook",
+      });
+      const preserveLorebookInput = createElement("input");
+      preserveLorebookInput.type = "checkbox";
+      preserveLorebookInput.checked = state.draftReanalysisPreserveLorebook;
+      preserveLorebookInput.disabled = isWorking();
+      preserveLorebookInput.dataset.reviewTransient = "true";
+      preserveLorebookInput.addEventListener("change", () => {
+        state.draftReanalysisPreserveLorebook = preserveLorebookInput.checked;
+      });
+      const preserveLorebookCopy = createElement("span");
+      preserveLorebookCopy.append(
+        createElement("strong", { text: "로어북 보존" }),
+        createElement("small", {
+          text: "현재 로어북을 재분석 입력에서 제외하고, 결과를 반영할 때 기존 로어북을 그대로 유지합니다.",
+        }),
+      );
+      preserveLorebookOption.append(preserveLorebookInput, preserveLorebookCopy);
+      postprocessToggles.append(reanalysisInstructionsOption);
+      postprocessOptions.append(
+        postprocessToggles,
+        makePostprocessModelField(
+          state.draftReanalysisConnectionId,
+          (value) => {
+            state.draftReanalysisConnectionId = value;
+          },
+          "작업 결과 재분석 모델",
+        ),
+      );
+      postprocessBody.append(postprocessOptions);
+      if (state.draftReanalysisInstructionsEnabled) {
+        const instructions = makeTextInput(
+          state.draftReanalysisInstructions,
+          (value) => {
+            state.draftReanalysisInstructions = value;
+          },
+          {
+            multiline: true,
+            rows: 4,
+            className: "pc-postprocess-instructions",
+            placeholder: "현재 검토 초안을 다시 검토할 때 적용할 추가 지침",
+          },
+        );
+        instructions.setAttribute("aria-label", "작업 결과 재분석 사용자 지침");
+        instructions.dataset.reviewTransient = "true";
+        instructions.disabled = isWorking();
+        postprocessBody.append(instructions);
+      }
+      postprocessBody.append(preserveLorebookOption);
+      const postprocessActions = createElement("div", {
+        className: "pc-review-actions pc-postprocess-actions",
+      });
+      const reanalyzeButton = createElement("button", {
+        className: "pc-button pc-button-secondary",
+        type: "button",
+        text: "작업 결과 재분석",
+      });
+      reanalyzeButton.disabled = isWorking() || !postprocessConnectionId(state.draftReanalysisConnectionId);
+      reanalyzeButton.addEventListener("click", () => void reanalyzeCurrentDraft());
+      postprocessActions.append(reanalyzeButton);
+      if (state.status === "reanalyzing_draft") {
+        const cancel = createElement("button", {
+          className: "pc-button pc-button-secondary",
+          type: "button",
+          text: state.abortRequested ? "취소 요청 중…" : "재분석 취소",
+        });
+        cancel.dataset.postprocessCancel = "true";
+        cancel.disabled = state.abortRequested;
+        cancel.addEventListener("click", () => void abortAnalysis());
+        postprocessActions.append(cancel);
+      }
+      postprocessBody.append(postprocessActions);
+      if (state.postprocessKind === "draft") postprocessBody.append(renderStatus());
+      postprocess.append(postprocessBody);
+      container.append(postprocess);
 
       const character = createElement("section", { className: "pc-review-section" });
       character.append(createElement("h3", { text: "캐릭터" }));
@@ -3274,6 +3907,25 @@
       lorebook.append(loreGrid);
 
       const entries = createElement("div", { className: "pc-entry-list" });
+      state.lorebookResplitSelection = new Set(
+        [...state.lorebookResplitSelection].filter(
+          (index) => Number.isInteger(index) && index >= 0 && index < draft.lorebook.entries.length,
+        ),
+      );
+      let selectAllInput = null;
+      let runSelectedButton = null;
+      const updateResplitSelectionControls = () => {
+        const selectedCount = state.lorebookResplitSelection.size;
+        if (selectAllInput) {
+          selectAllInput.checked = !!draft.lorebook.entries.length && selectedCount === draft.lorebook.entries.length;
+          selectAllInput.indeterminate = selectedCount > 0 && selectedCount < draft.lorebook.entries.length;
+        }
+        if (runSelectedButton) {
+          runSelectedButton.textContent = `선택한 로어북 다시 나누기 (${selectedCount})`;
+          runSelectedButton.disabled = isWorking() ||
+            !postprocessConnectionId(state.lorebookResplitConnectionId) || selectedCount === 0;
+        }
+      };
       if (draft.lorebook.entries.length === 0) {
         entries.append(createElement("div", { className: "pc-empty", text: "분류된 로어북 항목이 없습니다." }));
       }
@@ -3285,8 +3937,8 @@
         const excludeLabel = createElement("label", { className: "pc-entry-exclude" });
         const exclude = createElement("input");
         const setEntryControlsDisabled = (disabled) => {
-          for (const control of card.querySelectorAll("input, textarea")) {
-            if (control !== exclude) control.disabled = disabled;
+          for (const control of card.querySelectorAll("input, textarea, button")) {
+            if (control !== exclude && !control.dataset.lorebookResplitSelect) control.disabled = disabled;
           }
         };
         exclude.type = "checkbox";
@@ -3298,7 +3950,24 @@
           setEntryControlsDisabled(exclude.checked);
         });
         excludeLabel.append(exclude, createElement("span", { text: "항목 제외" }));
-        entryHeader.append(excludeLabel);
+        const entryActions = createElement("div", { className: "pc-entry-actions" });
+        const resplitLabel = createElement("label", {
+          className: "pc-entry-exclude pc-resplit-select",
+        });
+        const resplitInput = createElement("input");
+        resplitInput.type = "checkbox";
+        resplitInput.dataset.lorebookResplitSelect = String(index);
+        resplitInput.dataset.reviewTransient = "true";
+        resplitInput.checked = state.lorebookResplitSelection.has(index);
+        resplitInput.disabled = isWorking();
+        resplitInput.addEventListener("change", () => {
+          if (resplitInput.checked) state.lorebookResplitSelection.add(index);
+          else state.lorebookResplitSelection.delete(index);
+          updateResplitSelectionControls();
+        });
+        resplitLabel.append(resplitInput, createElement("span", { text: "다시 나누기 선택" }));
+        entryActions.append(resplitLabel, excludeLabel);
+        entryHeader.append(entryActions);
         card.append(entryHeader);
         const grid = createElement("div", { className: "pc-entry-grid" });
         addReviewField(grid, "이름", entry.name, (value) => {
@@ -3334,6 +4003,97 @@
         entries.append(card);
       });
       lorebook.append(entries);
+      const lorebookReanalysis = createElement("details", {
+        className: "pc-lorebook-reanalysis pc-collapsible-review",
+      });
+      lorebookReanalysis.open = state.lorebookReanalysisOpen;
+      lorebookReanalysis.addEventListener("toggle", () => {
+        state.lorebookReanalysisOpen = lorebookReanalysis.open;
+      });
+      lorebookReanalysis.append(createElement("summary", { text: "로어북 재분석" }));
+      const resplitFooter = createElement("div", {
+        className: "pc-lorebook-resplit-footer pc-collapsible-review-body",
+      });
+      resplitFooter.append(createElement("p", {
+        className: "pc-section-copy",
+        text: "선택한 로어북만 다시 나눕니다. 로어북 전체를 선택하면 현재 로어북을 함께 재구성합니다.",
+      }));
+      const resplitOptions = createElement("div", { className: "pc-lorebook-resplit-options" });
+      const resplitChecks = createElement("div", { className: "pc-lorebook-resplit-checks" });
+      const selectAllLabel = createElement("label", { className: "pc-entry-exclude pc-resplit-select-all" });
+      selectAllInput = createElement("input");
+      selectAllInput.type = "checkbox";
+      selectAllInput.dataset.reviewTransient = "true";
+      selectAllInput.disabled = isWorking() || draft.lorebook.entries.length === 0;
+      selectAllInput.addEventListener("change", () => {
+        state.lorebookResplitSelection = selectAllInput.checked
+          ? new Set(draft.lorebook.entries.map((_, index) => index))
+          : new Set();
+        for (const input of entries.querySelectorAll("[data-lorebook-resplit-select]")) {
+          input.checked = selectAllInput.checked;
+        }
+        updateResplitSelectionControls();
+      });
+      selectAllLabel.append(selectAllInput, createElement("span", { text: "로어북 전체 선택" }));
+      const characterContextOption = createElement("label", {
+        className: "pc-setting-toggle pc-lorebook-context-option",
+      });
+      const characterContextInput = createElement("input");
+      characterContextInput.type = "checkbox";
+      characterContextInput.checked = state.lorebookCharacterContext;
+      characterContextInput.disabled = isWorking();
+      characterContextInput.addEventListener("change", () => {
+        state.lorebookCharacterContext = characterContextInput.checked;
+      });
+      const characterContextCopy = createElement("span");
+      characterContextCopy.append(
+        createElement("strong", { text: "캐릭터 설정을 참고 정보로 포함" }),
+        createElement("small", {
+          text: "캐릭터 관계·설정과 밀접한 로어북은 포함을 권장합니다. 독립적인 세계관 중심이라면 필요하지 않습니다.",
+        }),
+      );
+      characterContextOption.append(characterContextInput, characterContextCopy);
+      resplitChecks.append(selectAllLabel);
+      resplitOptions.append(
+        resplitChecks,
+        characterContextOption,
+        makePostprocessModelField(
+          state.lorebookResplitConnectionId,
+          (value) => {
+            state.lorebookResplitConnectionId = value;
+          },
+          "로어북 다시 나누기 모델",
+        ),
+      );
+      resplitFooter.append(resplitOptions);
+      const resplitFooterActions = createElement("div", {
+        className: "pc-review-actions pc-lorebook-resplit-actions",
+      });
+      runSelectedButton = createElement("button", {
+        className: "pc-button pc-button-secondary",
+        type: "button",
+        text: "선택한 로어북 다시 나누기 (0)",
+      });
+      runSelectedButton.addEventListener("click", () => {
+        void resplitLorebook([...state.lorebookResplitSelection]);
+      });
+      resplitFooterActions.append(runSelectedButton);
+      if (state.status === "resplitting_lorebook") {
+        const cancel = createElement("button", {
+          className: "pc-button pc-button-secondary",
+          type: "button",
+          text: state.abortRequested ? "취소 요청 중…" : "다시 나누기 취소",
+        });
+        cancel.dataset.postprocessCancel = "true";
+        cancel.disabled = state.abortRequested;
+        cancel.addEventListener("click", () => void abortAnalysis());
+        resplitFooterActions.append(cancel);
+      }
+      resplitFooter.append(resplitFooterActions);
+      if (["lorebook", "entry"].includes(state.postprocessKind)) resplitFooter.append(renderStatus());
+      lorebookReanalysis.append(resplitFooter);
+      lorebook.append(lorebookReanalysis);
+      updateResplitSelectionControls();
       container.append(lorebook);
 
       const integration = createElement("section", { className: "pc-review-section" });
@@ -3408,7 +4168,7 @@
       presetBody.append(
         createElement("p", {
           className: "pc-section-copy",
-          text: "전체 RP 문체, 시점, 출력 형식, 전역 생성 규칙 후보입니다. 실제 Marinara 프리셋은 생성하지 않습니다.",
+          text: "전체 역할극 문체, 시점, 출력 형식, 전역 생성 규칙 후보입니다. 실제 Marinara 프리셋은 생성하지 않습니다.",
         }),
       );
       const presetList = createElement("div", { className: "pc-entry-list" });
@@ -3484,26 +4244,37 @@
 
       const saveSection = createElement("section", { className: "pc-review-section pc-save-section" });
       saveSection.append(
-        createElement("h3", { text: "Marinara 카드로 저장" }),
+        createElement("h3", { text: "Marinara 자산으로 저장" }),
         createElement("p", {
           className: "pc-section-copy",
-          text: "캐릭터와 로어북 항목만 저장합니다. 프리셋 후보와 잔여 지침은 검토 화면에 남습니다.",
+          text: "저장 범위를 선택한 뒤 하단의 저장 버튼을 누르세요. 프리셋 후보와 잔여 지침은 저장하지 않습니다.",
         }),
       );
-      const confirmation = createElement("label", { className: "pc-save-confirmation" });
-      const confirmationInput = createElement("input");
-      confirmationInput.type = "checkbox";
-      confirmationInput.checked = state.assetSaveConfirmed;
-      confirmationInput.disabled = state.assetSaving || (state.lorebookSaveStrategy === "merge" && !mergeAnalysisReady());
-      confirmationInput.addEventListener("change", () => {
-        state.assetSaveConfirmed = confirmationInput.checked;
-        renderFooter();
+      const saveScopeGroup = createElement("div", {
+        className: "pc-segmented pc-save-scope",
+        role: "radiogroup",
+        ariaLabel: "Marinara 자산 저장 범위",
       });
-      confirmation.append(
-        confirmationInput,
-        createElement("span", { text: "검토 값을 확인했으며 실제 캐릭터와 로어북을 생성·수정합니다." }),
-      );
-      saveSection.append(confirmation);
+      for (const [scope, label] of [
+        ["all", "캐릭터와 로어북"],
+        ["character", "캐릭터만"],
+        ["lorebook", "로어북만"],
+      ]) {
+        const scopeButton = createElement("button", { type: "button", text: label });
+        const selected = state.assetSaveScope === scope;
+        scopeButton.setAttribute("role", "radio");
+        scopeButton.setAttribute("aria-checked", String(selected));
+        scopeButton.dataset.selected = String(selected);
+        scopeButton.disabled = state.assetSaving;
+        scopeButton.addEventListener("click", () => {
+          state.assetSaveScope = scope;
+          state.assetSaveConfirmed = false;
+          state.assetSaveMessage = "";
+          render();
+        });
+        saveScopeGroup.append(scopeButton);
+      }
+      saveSection.append(saveScopeGroup);
       if (state.assetSaveMessage) {
         saveSection.append(createElement("div", {
           className: "pc-save-message",
@@ -3518,6 +4289,12 @@
         container.dataset.saving = "true";
         for (const control of container.querySelectorAll("input, textarea, select, button")) control.disabled = true;
       }
+      if (["reanalyzing_draft", "resplitting_lorebook"].includes(state.status)) {
+        container.dataset.processing = "true";
+        for (const control of container.querySelectorAll("input, textarea, select, button")) {
+          if (!control.dataset.postprocessCancel) control.disabled = true;
+        }
+      }
       return container;
     };
 
@@ -3529,20 +4306,12 @@
         const reset = createElement("button", {
           className: "pc-button pc-button-secondary pc-button-small",
           type: "button",
-          text: "작업 초기화",
+          text: "초기화",
         });
         reset.disabled = isWorking() || state.savedDraftBusy;
         reset.addEventListener("click", () => void resetSession());
         controls.append(reset);
         if (sessionHasWork()) {
-          const saveDraft = createElement("button", {
-            className: "pc-button pc-button-secondary pc-button-small",
-            type: "button",
-            text: "초안 저장",
-          });
-          saveDraft.disabled = isWorking() || state.savedDraftBusy;
-          saveDraft.addEventListener("click", () => void saveCurrentDraft());
-          controls.append(saveDraft);
           if (state.activeSavedDraftId) {
             const updateDraft = createElement("button", {
               className: "pc-button pc-button-secondary pc-button-small",
@@ -3552,6 +4321,15 @@
             updateDraft.disabled = isWorking() || state.savedDraftBusy || !currentSavedDraftDirty();
             updateDraft.addEventListener("click", () => void saveCurrentDraft({ updateExisting: true }));
             controls.append(updateDraft);
+          } else {
+            const saveDraft = createElement("button", {
+              className: "pc-button pc-button-secondary pc-button-small",
+              type: "button",
+              text: "초안 저장",
+            });
+            saveDraft.disabled = isWorking() || state.savedDraftBusy;
+            saveDraft.addEventListener("click", () => void saveCurrentDraft());
+            controls.append(saveDraft);
           }
         }
         const status = renderSessionStatus();
@@ -3579,26 +4357,22 @@
         return;
       }
       if (state.view === "review") {
-        const back = createElement("button", { className: "pc-button pc-button-secondary", type: "button", text: "입력으로 돌아가기" });
-        back.disabled = isWorking();
-        back.addEventListener("click", () => {
-          state.view = "input";
-          state.navigationView = "prompt";
-          updateStatus("idle", "기존 입력과 LLM 연결 선택을 유지했습니다.");
-          render();
-        });
         const right = createElement("div", { className: "pc-footer-actions" });
-        const fingerprint = currentSaveFingerprint();
-        const completed = state.assetSaveResult?.fingerprint === fingerprint && saveResultComplete(state.assetSaveResult);
-        const failures = state.assetSaveResult?.fingerprint === fingerprint
-          ? saveResultFailures(state.assetSaveResult)
-          : [];
+        const fingerprints = currentSaveFingerprints();
         const strategy = state.lorebookSaveStrategy;
-        const targetReady = strategy === "new" || (
+        const scope = assetCore.SAVE_SCOPES.includes(state.assetSaveScope) ? state.assetSaveScope : "all";
+        const lorebookTargetReady = strategy === "new" || (
           state.lorebooksStatus === "success" &&
           state.lorebooks.some((book) => book.id === state.selectedLorebookId) &&
           (strategy !== "merge" || (state.existingEntriesStatus === "success" && mergeAnalysisReady()))
         );
+        const completed = saveResultComplete(state.assetSaveResult, scope, fingerprints);
+        const current = scope === "character"
+          ? state.assetSaveResult?.characterFingerprint === fingerprints.character
+          : scope === "lorebook"
+            ? state.assetSaveResult?.lorebookFingerprint === fingerprints.lorebook
+            : state.assetSaveResult?.fingerprint === fingerprints.all;
+        const failures = current ? saveResultFailures(state.assetSaveResult, scope) : [];
         const saveButton = createElement("button", {
           className: "pc-button pc-button-primary",
           type: "button",
@@ -3608,15 +4382,11 @@
               ? "실패 항목 재시도"
               : completed
                 ? "저장 완료"
-                : "캐릭터 + 로어북 저장",
+                : "저장",
         });
-        saveButton.disabled = state.assetSaving || !state.assetSaveConfirmed || !targetReady || completed;
-        saveButton.addEventListener("click", () => void executeAssetSave());
-        right.append(
-          createElement("span", { className: "pc-footer-note", text: "프리셋·잔여 지침 미저장" }),
-          back,
-          saveButton,
-        );
+        saveButton.disabled = isWorking() || (scope !== "character" && !lorebookTargetReady) || completed;
+        saveButton.addEventListener("click", () => void requestAssetSave());
+        right.append(saveButton);
         footer.append(sessionControls(), right);
         return;
       }
@@ -3634,6 +4404,8 @@
 
     function render() {
       body.textContent = "";
+      closeButton.setAttribute("aria-label", isWorking() ? "창 닫기, 분석은 백그라운드에서 계속됩니다" : "프롬프트 이식 닫기");
+      closeButton.title = isWorking() ? "창을 닫아도 분석은 계속됩니다." : "닫기";
       const activeNavigationView = state.navigationView;
       for (const button of navigation.querySelectorAll("button")) {
         const selected = button.dataset.view === activeNavigationView;
@@ -3651,18 +4423,25 @@
             : renderInput(),
       );
       renderFooter();
-      scheduleSessionSave();
+      if (root.hidden && !isWorking()) void flushSessionSave();
+      else scheduleSessionSave();
     }
 
     async function loadConnections() {
       const previousSelection = state.selectedConnectionId;
-      updateStatus("loading_connections", "Marinara의 LLM 연결 목록을 불러오는 중입니다.");
+      const previousAnalysisConnection = state.analysisConnectionId;
+      updateStatus("loading_connections", "Marinara의 AI 모델 연결 목록을 불러오는 중입니다.");
       render();
       try {
         state.connections = normalizeConnections(await apiRequest("/api/connections"));
         state.selectedConnectionId = state.connections.some((connection) => connection.id === previousSelection)
           ? previousSelection
           : state.connections.find((connection) => connection.preferred)?.id || state.connections[0]?.id || "";
+        state.analysisConnectionId = state.connections.some((connection) => connection.id === previousAnalysisConnection)
+          ? previousAnalysisConnection
+          : state.selectedConnectionId;
+        if (!connectionById(state.draftReanalysisConnectionId)) state.draftReanalysisConnectionId = "";
+        if (!connectionById(state.lorebookResplitConnectionId)) state.lorebookResplitConnectionId = "";
         if (state.connections.length === 0) {
           updateStatus("generation_error", "모델이 설정된 텍스트 생성용 연결이 없습니다.");
         } else {
@@ -3676,15 +4455,47 @@
       render();
     }
 
+    const minimizeForBackground = async () => {
+      if (!isWorking() || !root.isConnected) {
+        closeModal();
+        return;
+      }
+      root.hidden = true;
+      root.setAttribute("aria-hidden", "true");
+      if (modalRoot === root) modalRoot = null;
+      backgroundPromptSession = {
+        restore: () => {
+          backgroundPromptSession = null;
+          root.hidden = false;
+          root.removeAttribute("aria-hidden");
+          modalRoot = root;
+          render();
+          closeButton.focus();
+        },
+        destroy: () => {
+          backgroundPromptSession = null;
+          root.hidden = false;
+          root.removeAttribute("aria-hidden");
+          modalRoot = root;
+          closeModal();
+        },
+      };
+      try {
+        await flushSessionSave();
+      } catch (error) {
+        hostMarinara.log.warn("Prompt Converter session could not be saved before background analysis", error);
+      }
+    };
+
     const requestClose = () => {
       if (isWorking()) {
-        void abortAnalysis();
+        void minimizeForBackground();
         return;
       }
       closeModal();
     };
     const keydown = (event) => {
-      const activeDialog = savedDraftCleanupDialog || replacementDialog;
+      const activeDialog = savedDraftCleanupDialog || replacementDialog || assetSaveDialog;
       if (activeDialog && event.key === "Tab") {
         const buttons = [
           ...activeDialog.element.querySelectorAll("button:not(:disabled)"),
@@ -3701,22 +4512,16 @@
       if (event.key === "Escape") {
         if (savedDraftCleanupDialog) closeSavedDraftCleanupDialog(false);
         else if (replacementDialog) closeReplacementDialog(false);
+        else if (assetSaveDialog) closeAssetSaveDialog(false);
         else requestClose();
       }
     };
     closeButton.addEventListener("click", requestClose);
+    migrationCenter.closePrompt = requestClose;
     const markSessionTouched = (event) => {
+      if (event?.target instanceof Element && event.target.closest("[data-review-transient]")) return;
       state.sessionTouched = true;
-      if (
-        state.view === "review" &&
-        event?.target instanceof Element &&
-        !event.target.closest(".pc-save-confirmation")
-      ) {
-        state.assetSaveConfirmed = false;
-        const confirmation = root.querySelector(".pc-save-confirmation input");
-        if (confirmation instanceof HTMLInputElement) confirmation.checked = false;
-        renderFooter();
-      }
+      if (state.view === "review") state.assetSaveConfirmed = false;
       markMergeAnalysisStaleIfNeeded();
       scheduleSessionSave();
     };
@@ -3731,6 +4536,7 @@
       document.removeEventListener("keydown", keydown);
       closeSavedDraftCleanupDialog(false);
       closeReplacementDialog(false);
+      closeAssetSaveDialog(false);
       if (sessionSaveTimer !== null) {
         hostMarinara.clearTimeout(sessionSaveTimer);
         sessionSaveTimer = null;
@@ -3740,7 +4546,7 @@
         const serialized = JSON.stringify(payload);
         if (serialized !== lastSavedSession && new TextEncoder().encode(serialized).length <= SESSION_STORAGE_BUDGET_BYTES) {
           cachedSession = normalizeStoredSession(payload);
-          void hostMarinara.storage.patch({ [SESSION_STORAGE_KEY]: payload }).catch((error) => {
+          void queueSessionPersist(payload, serialized).catch((error) => {
             hostMarinara.log.warn("Prompt Converter session could not be saved on close", error);
           });
         }
@@ -3780,7 +4586,8 @@
   migrationCenter.closePrompt = closeModal;
 
   hostMarinara.onCleanup(() => {
-    closeModal();
+    if (backgroundPromptSession) backgroundPromptSession.destroy();
+    else closeModal();
     delete migrationCenter.openPrompt;
     delete migrationCenter.openWorkspace;
     delete migrationCenter.openSettings;
