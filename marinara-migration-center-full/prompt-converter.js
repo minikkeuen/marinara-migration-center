@@ -1705,12 +1705,26 @@
       })}`;
     };
 
-    const renderCostEstimate = ({ messages, connectionId, referenceOutputTokens, requestCount = 1, label = "현재 실행" }) => {
+    const renderCostEstimate = ({
+      messages,
+      connectionId,
+      referenceOutputTokens,
+      requestCount = 1,
+      label = "현재 실행",
+      aggregateInputTokens,
+      aggregateOutputTokens,
+    }) => {
       const connection = connectionById(connectionId);
       const count = Math.max(1, Math.round(Number(requestCount) || 1));
+      const inputTokens = Number.isFinite(aggregateInputTokens)
+        ? Math.max(0, Math.ceil(aggregateInputTokens))
+        : estimateMessageTokens(messages) * count;
+      const outputTokens = Number.isFinite(aggregateOutputTokens)
+        ? Math.max(0, Math.ceil(aggregateOutputTokens))
+        : core.roundEstimatedTokensToHundred(referenceOutputTokens) * count;
       const estimate = core.estimateGenerationCost({
-        inputTokens: estimateMessageTokens(messages) * count,
-        referenceOutputTokens: core.roundEstimatedTokensToHundred(referenceOutputTokens) * count,
+        inputTokens,
+        referenceOutputTokens: outputTokens,
         maxOutputTokens: effectiveMaxOutputTokens(connectionId) * count,
         settings: state.settings,
         model: connection?.model || "",
@@ -3363,6 +3377,22 @@
       analyzeChatButton.disabled = isWorking() || !state.selectedConnectionId || !plan.turns.length;
       analyzeChatButton.addEventListener("click", analyzeConversation);
       if (state.selectedConnectionId && plan.chunks.length) {
+        const extractionInputTokens = plan.chunks.reduce((sum, chunk, index) => sum + estimateMessageTokens(
+          chatCore.buildExtractionMessages({
+            originalPrompt: originalPromptText(),
+            chunk: chunk.text,
+            chunkIndex: index + 1,
+            totalChunks: plan.chunks.length,
+          }),
+        ), 0);
+        const reduceBaseInputTokens = estimateMessageTokens(chatCore.buildReduceMessages({
+          originalPrompt: originalPromptText(),
+          extractionResults: [],
+          includeRelationshipDevelopment: state.includeRelationshipDevelopment,
+          languageMode: state.settings.languageMode,
+          targetLanguage: state.settings.targetLanguage,
+        }));
+        const aggregateInputTokens = extractionInputTokens + reduceBaseInputTokens + plan.selectedTokens;
         section.append(renderCostEstimate({
           messages: chatCore.buildExtractionMessages({
             originalPrompt: originalPromptText(),
@@ -3371,8 +3401,10 @@
             totalChunks: plan.chunks.length,
           }),
           connectionId: state.selectedConnectionId,
-          referenceOutputTokens: chatCore.estimateTokens(originalPromptText()),
+          referenceOutputTokens: plan.selectedTokens,
           requestCount: plan.chunks.length + 1,
+          aggregateInputTokens,
+          aggregateOutputTokens: plan.selectedTokens,
           label: `대화 구간 추출 ${plan.chunks.length.toLocaleString()}회 + 최종 통합 1회`,
         }));
       }
