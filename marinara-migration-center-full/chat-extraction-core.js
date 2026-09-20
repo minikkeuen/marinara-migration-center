@@ -140,7 +140,13 @@
         chat.branchLabel = `분기 ${branchNumber}${chat.branchName ? `: ${chat.branchName}` : ""}`;
       }
     }
-    return chats.sort((left, right) => (Date.parse(right.updatedAt) || 0) - (Date.parse(left.updatedAt) || 0));
+    const koreanCollator = new Intl.Collator("ko", { numeric: true, sensitivity: "base" });
+    return chats.sort((left, right) =>
+      koreanCollator.compare(left.name, right.name) ||
+      koreanCollator.compare(left.mode, right.mode) ||
+      (Date.parse(left.createdAt) || 0) - (Date.parse(right.createdAt) || 0) ||
+      koreanCollator.compare(left.id, right.id),
+    );
   }
 
   const availableChatLabel = (chat) => [chat?.mode, chat?.name, chat?.branchLabel].filter(Boolean).join(" · ");

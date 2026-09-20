@@ -4,7 +4,7 @@ Marinara Engine용 채팅 기록 Import 확장 프로그램입니다.
 
 TXT, Excel (`.xlsx`), JSON, JSONL 형식의 대화 기록을 Marinara 채팅으로 가져올 수 있으며, TXT 파일의 불필요한 메타데이터와 상태창 등을 Import 전에 정리할 수 있습니다.
 
-**Version 1.5.1**
+**Version 1.9.1**
 
 API/schema 기준 확인: Marinara Engine 2.4.4 소스. Character-Lorebook 연결에는 공식 `embedded-lorebook/embed` 경로가 필요합니다.
 
@@ -31,9 +31,12 @@ API/schema 기준 확인: Marinara Engine 2.4.4 소스. Character-Lorebook 연�
 - 영구 저장되는 AI generation / Analyzer Prompt / Output Instructions 설정
 - JSON 검증, 설정 가능한 유한 자동 교정, 편집 가능한 Review
 - 마지막 분석 결과와 Review 수정 내용을 다시 여는 작업소
+- Marinara에 저장된 봇카드를 이미지 목록에서 선택해 Review로 가져오기
 - 자동저장과 분리된 다중 Saved Draft 보관·열기·이름 변경·삭제
 - 현재 Review Draft만 사용하는 작업 결과 재분석
 - 전체 또는 개별 Lorebook Entry 다시 나누기와 선택적 Character Context
+- Prompt Sources와 Review 저장 대상의 예상 토큰 표시
+- 실행 전 입력·출력 예상 토큰 기반 AI 비용 범위
 - Review 확정값을 공식 API로 Character만, Lorebook만 또는 둘 다 저장
 - 새 Lorebook 생성, 기존 Lorebook에 추가, 사용자 확인 기반 Entry 병합
 - 부분 실패 결과와 실패 항목 재시도, 동일 Review 중복 저장 방지
@@ -56,8 +59,8 @@ ENABLE_EXTERNAL_EXTENSIONS=true
 
 외부 플랫폼 프롬프트를 적용 범위에 따라 Marinara용 Character, Lorebook, Preset 후보와 Residual Instructions draft로 분류합니다. AI draft는 바로 저장하지 않으며 사용자가 Review에서 확정한 Character와 Lorebook/Entry 값만 실제 Marinara 자산으로 저장합니다. Preset 후보와 Residual Instructions는 자동 저장하지 않습니다.
 
-- **원본 보존 (Preserve)**: 기본 모드입니다. 영어로 번역·분류하되 정보, 강도, 조건, 예외와 의도적인 강조를 보존하고 필요한 만큼만 재구성합니다.
-- **자연어 최적화 (Normalize)**: 기본 결과는 영어이며, 원본에 없는 설정을 만들지 않고 키워드·메모식 표현을 현대 LLM이 이해하기 좋은 자연어로 재작성합니다.
+- **원본 보존 (Preserve)**: 기본 모드입니다. 선택한 언어 정책에 따라 분류하되 정보, 강도, 조건, 예외와 의도적인 강조를 보존하고 필요한 만큼만 재구성합니다.
+- **자연어 최적화 (Normalize)**: 선택한 언어 정책을 따르며, 원본에 없는 설정을 만들지 않고 키워드·메모식 표현을 현대 LLM이 이해하기 좋은 자연어로 재작성합니다.
 
 - **Combined**: 전체 프롬프트를 하나의 입력창에 입력합니다.
 - **Separated**: Character, World / Lore, System / Style, Other 출처를 나누어 입력합니다.
@@ -65,15 +68,21 @@ ENABLE_EXTERNAL_EXTENSIONS=true
 - **대화 내역 참조**: 기본값은 OFF입니다. ON으로 켜면 기본적으로 **대화 가져오기**에서 현재 선택된 메시지를 사용하며, 필요하면 **채팅방 선택**에서 저장된 Marinara 채팅을 직접 선택할 수 있습니다. 최근 N턴 또는 전체 대화를 선택하며 최근 Turn부터 예상 토큰을 누적해 약 100K에 도달하는 범위를 권장합니다.
 - **대화 분석 기반 프롬프트**: 선택 범위를 메시지·턴 경계를 우선해 token 기준 Chunk로 나눈 뒤 재사용 가능한 Character·관계·세계 정보를 추출하고 통합합니다. 결과는 일반 textarea에서 확인·수정·삭제할 수 있으며 제목과 레이블에 원본과 무관한 굵게·기울임 등의 장식 강조를 추가하지 않습니다.
 
-채팅방 목록은 `CONVO`, `RP`, `GAME`으로 모드를 구분합니다. 같은 분기 그룹은 `원본`, `분기 N: 분기 이름`을 함께 표시하므로 이름이 같은 채팅방도 구분할 수 있습니다. **전체 대화**는 자동 요약 등으로 향후 generation context에서만 제외된 `hiddenFromAI` 과거 메시지도 원래 transcript의 일부로 포함하며, 사용자 transcript 자체에서 숨겨진 `hiddenFromUser` 메시지는 제외합니다.
+채팅방 목록은 이름 기준 가나다순으로 정렬하고 `CONVO`, `RP`, `GAME`으로 모드를 구분합니다. 같은 분기 그룹은 `원본`, `분기 N: 분기 이름`을 함께 표시하므로 이름이 같은 채팅방도 구분할 수 있습니다. **전체 대화**는 자동 요약 등으로 향후 generation context에서만 제외된 `hiddenFromAI` 과거 메시지도 원래 transcript의 일부로 포함하며, 사용자 transcript 자체에서 숨겨진 `hiddenFromUser` 메시지는 제외합니다.
 
 UI의 수치는 실제 billing token이 아닌 범위 선택과 Chunking용 **예상 토큰**입니다. Latin·숫자는 약 4자, Hangul은 약 2자, Han·Kana는 약 1.5자를 1 token으로 보고 문자 종류별 값을 합산한 뒤 약 10% safety margin을 적용합니다. 기타 기호와 문자는 보수적으로 계산합니다. 메시지별 예상값은 한 번 계산해 Turn·범위·Chunk 계산에 재사용합니다. 권장 턴 수는 최근 Turn부터 예상 토큰을 누적해 약 100K에 도달하는 범위이며, 전체 대화가 그보다 짧으면 평균 예상 토큰/turn으로 필요한 턴 수를 외삽하므로 실제 보유 턴 수로 잘리지 않습니다. 실제 최근 N턴 입력만 현재 대화 범위 안으로 제한합니다. Chunk 예산은 선택한 Connection의 `maxContext`, Analyzer 지침, 원본 프롬프트, 예상 출력과 안전 여유를 고려합니다. UI의 **N회 나눠서 분석** 표시는 각 Chunk의 Extraction과 Reduce를 하나의 대화 분석 세트로 묶어 계산합니다. 권장량을 넘겨도 실행을 막지 않지만 비용과 시간이 늘어날 수 있습니다. 관계 변화 과정은 기본적으로 보존하며 옵션을 끄면 현재 관계 상태를 우선합니다.
+
+같은 estimator로 Combined/Separated의 각 Prompt, 별도 Lorebook Source, 활성화된 대화 분석 기반 Prompt와 Prompt Sources 전체 합계를 즉시 갱신합니다. 각 Prompt의 예상값은 입력칸 제목 오른쪽에 표시합니다. Review에서는 실제 저장되는 Character 필드와 제외되지 않은 Lorebook Entry를 기준으로 캐릭터·로어북 제목 오른쪽에 각각의 예상 토큰을 표시하고, **Marinara 자산으로 저장** 제목 옆 정보 버튼에서 Character, Lorebook, 전체 결과 합계를 확인할 수 있습니다. 기존 Lorebook 병합 시에는 현재 최종 저장 값과 제외·충돌 결정을 반영합니다. 이 수치는 저장 결과물 크기의 예상값이며 API usage가 아닙니다.
+
+기존 로어북 선택 목록은 이름 기준 가나다순으로 정렬하며, 개인 기억 저장용으로 관리되는 `기억 보관함`으로 시작하는 로어북은 병합 대상 목록에서 제외합니다.
+
+**AI 분석 예상 비용**은 실행 전에 실제 요청 메시지의 입력 예상 토큰과 출력 예상 범위를 계산합니다. 출력 최소는 활성 프롬프트 또는 현재 작업 대상의 예상 토큰을 100단위 올림하고, 출력 최대는 이식 센터 재정의값·Connection 기본값·Connection 제한을 순서대로 반영합니다. DeepSeek V4 Pro 피크/오프피크와 GLM 5.2 프리셋을 제공하며, 사용자가 통화와 입력·출력 단가를 100만 토큰 기준으로 직접 저장할 수도 있습니다. USD 비용은 Frankfurter의 USD→KRW 환율을 6시간 동안 저장해 한화 예상액을 함께 표시하며 설정에서 즉시 새로고침할 수 있습니다. 환율 조회에 실패하면 마지막 정상 환율을 유지합니다. 캐시, 재시도와 조건부 JSON 교정은 포함하지 않으며 표시 금액은 실제 청구 비용이 아닙니다. Token Cost Recipe와는 연동하지 않습니다.
 
 대화 분석은 Character/Lorebook을 직접 만들지 않습니다. 생성된 대화 분석 기반 프롬프트를 원본 프롬프트와 별도 Source로 기존 Prompt Conversion에 전달하며, 원본이 비어 있어도 대화 분석 기반 프롬프트만으로 변환할 수 있습니다. 대화 내역 참조를 OFF로 바꾸면 생성된 내용은 작업 session에 유지하되 최종 변환 입력에서는 제외합니다. 사용자가 결과를 수정한 뒤 재분석하면 교체 전 확인합니다.
 
 Marinara connections API에서 모델이 설정된 텍스트 생성 Connection만 표시하고, 선택한 Connection으로 raw generation API를 호출합니다. 기본적으로 Connection의 generation 설정을 사용하며 Temperature와 Max output tokens는 사용자가 override를 켠 경우에만 요청에 추가합니다. 응답 제한 시간이 지나면 현재 raw generation run을 중단합니다. API key는 Marinara가 관리하며 확장은 읽거나 저장하지 않습니다.
 
-**AI 설정**에서는 생성 설정 재정의, 응답 제한 시간, JSON 교정 횟수, 최종 JSON 값의 표현 방식을 조절하는 **내용 및 형식 지침**, 그리고 **언어 고유 표현 보존**을 수정할 수 있습니다. 분석 정책과 JSON schema는 확장에 고정되어 사용자 지침으로 덮어쓸 수 없습니다. 언어 표현 보존 옵션은 기본적으로 꺼져 있으며, 켠 경우에만 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현을 원어와 함께 선택적으로 유지합니다. AI 설정은 작업 session과 별도의 확장 전용 `marinara.storage` 키에 저장됩니다. 사용자 지침 또는 전체 설정을 1.5.0 기본값으로 복원할 수 있습니다.
+**AI 설정**에서는 생성 설정 재정의, 응답 제한 시간, JSON 교정 횟수, 예상 비용 가격 프리셋과 직접 입력 단가, 최종 JSON 값의 표현 방식을 조절하는 **내용 및 형식 지침**, 그리고 **언어 고유 표현 보존**을 수정할 수 있습니다. 분석 정책과 JSON schema는 확장에 고정되어 사용자 지침으로 덮어쓸 수 없습니다. 언어 표현 보존 옵션은 기본적으로 꺼져 있으며, 켠 경우에만 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현을 원어와 함께 선택적으로 유지합니다. AI 설정은 작업 session과 별도의 확장 전용 `marinara.storage` 키에 저장됩니다. 사용자 지침 또는 전체 설정을 기본값으로 복원할 수 있습니다.
 
 Prompt Conversion의 마지막 작업 1개는 확장 전용 working session으로 자동 저장됩니다. Original/Separated 입력, 변환 모드와 AI 설정, Connection 선택, 대화 참조 설정과 선택 ID, 대화 분석 기반 프롬프트, AI draft, Review 수정 및 제외 상태를 복원합니다. 로어북 병합 분석을 마친 경우 선택 로어북, 분석 지문, 항목별 action·매칭 ID·제안 사유·경고·최종 편집값도 함께 복원합니다. 다시 불러온 대상 로어북이나 초안이 저장 당시와 다르면 기존 병합 결과를 stale 처리하고 재분석을 요구합니다. 입력 변경은 600ms debounce 후 저장하며 창을 닫을 때 남은 변경을 한 번 더 저장합니다. `작업 초기화`는 이 session만 지우고 AI Settings, Saved Draft, 실제 Marinara 자산에는 영향을 주지 않습니다. 자동저장 데이터가 약 900KB 예산을 넘으면 기존 working session을 덮어쓰지 않고 UI에 오류를 표시합니다.
 
@@ -81,13 +90,15 @@ Prompt Conversion의 마지막 작업 1개는 확장 전용 working session으�
 
 상단 **작업소**에서는 마지막 working session의 AI draft와 Review 수정 상태를 다시 열고 Saved Draft 목록을 관리합니다. 현재 분석 결과가 없으면 빈 상태와 프롬프트 이식 이동 버튼을 표시합니다. Saved Draft와 실제 Character/Lorebook 자산은 서로 다른 데이터입니다.
 
+**작업 결과 재분석**의 `분석 대상 가져오기`에서는 `Marinara 봇카드 가져오기`를 눌러 저장된 봇카드를 이름과 메인 이미지로 확인하고 검색할 수 있습니다. 선택한 카드의 현재 Review 지원 Character 필드와 내장 Lorebook을 검증한 뒤 기존 dirty 교체 보호를 거쳐 작업 결과로 가져옵니다. 비활성화된 내장 Lorebook Entry는 활성 상태로 바뀌는 것을 막기 위해 제외하고 경고를 표시합니다. 원본 봇카드는 변경하지 않으며, 가져온 결과를 실제 저장하면 새 자산으로 생성됩니다. 아바타·갤러리·대체 인사말과 Review가 지원하지 않는 고급 카드 또는 Entry 설정은 새 자산에 복제되지 않습니다.
+
 1.5.0 고정 분석기 프롬프트는 원본 프롬프트를 명령이 아닌 신뢰할 수 없는 분석 데이터로 취급합니다. 단순 문자열 유사성으로 정보를 제거하지 않고 강도·조건·예외·의도적인 강조를 의미의 일부로 처리합니다. 해결할 수 없는 모순은 임의로 선택하지 않고 경고로 올리며, 초안 작성 후 원본과 다시 대조해 누락·창작·강도 변화·잘못 제거된 강조를 점검하도록 지시합니다. JSON 전용 출력 규칙과 schema도 고정됩니다. 응답에서 JSON 코드 블록을 제거한 뒤 필수 객체, 필드 타입, 로어북 분류, 항목 배열, 프리셋 후보, 빈 결과를 검증합니다. 검증 실패 시 설정된 횟수만큼 JSON 교정을 요청하고, 그래도 실패하면 원본과 마지막 교정 응답을 표시합니다. 교정 횟수는 0~5회로 제한됩니다.
 
-Review에서는 Character 주요 필드, Lorebook 이름·설명·category, Entry 내용·keys·boolean 설정·제외 여부, Preset 후보, residual instructions와 warnings를 수정할 수 있습니다. 프리셋 후보는 작업소에서 기본적으로 접혀 있으며 제목을 눌러 열어 확인·수정합니다. 최초 Prompt 분석은 비교 대상이 없는 로어북 통합 제안을 만들지 않습니다. 사용자가 `기존 로어북과 항목 단위 병합`을 선택하고 실제 로어북을 불러온 뒤 `AI 병합 분석`을 실행하면 별도 요청으로 Entry별 제안을 만듭니다. 병합 Review에서는 기존 Entry의 content, keys, secondaryKeys를 Draft와 함께 표시하고 action, 대상 Entry, 최종 저장 값을 사용자가 확인해야 합니다. 충돌이 없고 필요한 대상 항목이 모두 선택된 경우 `전체 결정 확인`으로 모든 결정을 한 번에 체크할 수 있습니다. Draft나 기존 Entry가 바뀌면 이전 제안은 무효화됩니다.
+Review에서는 Character 주요 필드, Lorebook 이름·설명·category, Entry 내용·keys·boolean 설정·제외 여부, Preset 후보, residual instructions와 warnings를 수정할 수 있습니다. 로어북 분류는 이름 입력칸과 같은 높이의 5개 버튼형 토글로 선택합니다. 프리셋 후보는 작업소에서 기본적으로 접혀 있으며 제목을 눌러 열어 확인·수정합니다. 최초 Prompt 분석은 비교 대상이 없는 로어북 통합 제안을 만들지 않습니다. 사용자가 `기존 로어북과 항목 단위 병합`을 선택하고 실제 로어북을 불러온 뒤 `AI 병합 분석`을 실행하면 별도 요청으로 Entry별 제안을 만듭니다. 병합 Review에서는 기존 Entry의 content, keys, secondaryKeys를 Draft와 함께 표시하고 action, 대상 Entry, 최종 저장 값을 사용자가 확인해야 합니다. 충돌이 없고 필요한 대상 항목이 모두 선택된 경우 `전체 결정 확인`으로 모든 결정을 한 번에 체크할 수 있습니다. Draft나 기존 Entry가 바뀌면 이전 제안은 무효화됩니다.
 
-**작업 결과 재분석**은 기본적으로 접혀 있으며, 현재 Review에서 사용자가 수정한 최신 Draft만 AI에 보내 다시 검토·정리합니다. Character, Lorebook, Preset 후보와 Residual Instructions 사이의 scope 및 Character 내부 필드 분류에는 최초 분석과 동일한 source-independent 고정 분류 정책을 사용합니다. `사용자 지침 추가`를 켜면 비어 있지 않은 추가 지침을 이 후처리 요청에만 함께 전달합니다. `로어북 보존`은 실행 버튼 바로 위의 전체 너비 옵션이며, 켜면 현재 Lorebook과 Entries를 AI 입력에서 제외하고 검증된 결과를 반영할 때 기존 Lorebook을 그대로 복원합니다. 우측 모델 선택칸은 기본적으로 최초 분석에 사용한 모델명을 표시하고 같은 모델을 사용하며, 필요하면 이 요청에만 다른 연결을 선택할 수 있습니다. Original Prompt, 별도 Lorebook Source, Conversation 원문과 대화 분석 기반 프롬프트는 보내지 않으며, 누락된 원본 정보를 복구하는 기능이 아닙니다. 검증과 설정된 JSON 자동 교정을 통과한 결과만 전체 Review Draft에 반영합니다.
+**작업 결과 재분석**은 기본적으로 접혀 있으며, 현재 Review에서 사용자가 수정한 최신 Draft만 AI에 보내 다시 검토·정리합니다. Character, Lorebook, Preset 후보와 Residual Instructions 사이의 scope 및 Character 내부 필드 분류에는 최초 분석과 동일한 source-independent 고정 분류 정책을 사용합니다. `사용자 지침 추가`를 켜면 비어 있지 않은 추가 지침을 이 후처리 요청에만 함께 전달합니다. `지침 프리셋`은 `표현·구조 개선`, `중복 정리`, `모순·모호성 점검`, `간결성 개선`, `자연어화` 중 하나를 선택하는 세그먼트 버튼입니다. 선택하면 사용자 지침칸을 자동 활성화하고 해당 지침을 채우며, 직접 수정하면 프리셋 선택 상태가 해제됩니다. 선택한 프리셋의 정보 보존 주의점과 고급 모델 권장은 지침칸 아래에 표시합니다. PC에서는 `로어북 보존` 옵션과 실행 버튼을 같은 높이의 한 행에 표시하며, 옵션을 켜면 현재 Lorebook과 Entries를 AI 입력에서 제외하고 검증된 결과를 반영할 때 기존 Lorebook을 그대로 복원합니다. 우측 모델 선택칸은 기본적으로 최초 분석에 사용한 모델명을 표시하고 같은 모델을 사용하며, 필요하면 이 요청에만 다른 연결을 선택할 수 있습니다. Original Prompt, 별도 Lorebook Source, Conversation 원문과 대화 분석 기반 프롬프트는 보내지 않으며, 누락된 원본 정보를 복구하는 기능이 아닙니다. 검증과 설정된 JSON 자동 교정을 통과한 결과만 전체 Review Draft에 반영합니다.
 
-**로어북 재분석**은 로어북 하단에서 기본적으로 접혀 있습니다. 각 Entry의 선택 체크박스로 대상을 고르고 `로어북 전체 선택`과 우측 모델을 설정한 뒤, 전체 너비의 `캐릭터 설정을 참고 정보로 포함` 옵션과 아래 줄의 `선택한 로어북 다시 나누기`를 사용합니다. 전체를 선택하면 현재 Lorebook 전체를 함께 재구성하고, 일부만 선택하면 선택된 각 Entry를 더 적절한 의미 단위로 나눠 원래 위치에 교체하며 선택하지 않은 Entry는 유지합니다. 일부 선택은 모든 대상의 결과가 검증된 뒤에만 한 번에 반영하므로 중간 실패나 취소로 Review 일부만 바뀌지 않습니다. 캐릭터 참고 옵션은 기본적으로 꺼져 있으며, 켜면 현재 Character Draft가 읽기 전용 참고 자료로만 전달됩니다. 모든 재분석은 기존 generation override, timeout, 취소, JSON 검증·교정 흐름을 사용하며 실패하거나 취소되면 기존 Review Draft를 유지합니다.
+**로어북 재분석**은 로어북 하단에서 기본적으로 접혀 있습니다. 각 Entry의 선택 체크박스로 대상을 고르고 `로어북 전체 선택`과 우측 모델을 설정합니다. PC에서는 `캐릭터 설정을 참고 정보로 포함` 옵션과 `선택한 로어북 다시 나누기` 버튼을 같은 높이의 한 행에 표시합니다. 전체를 선택하면 현재 Lorebook 전체를 함께 재구성하고, 일부만 선택하면 선택된 각 Entry를 더 적절한 의미 단위로 나눠 원래 위치에 교체하며 선택하지 않은 Entry는 유지합니다. 일부 선택은 모든 대상의 결과가 검증된 뒤에만 한 번에 반영하므로 중간 실패나 취소로 Review 일부만 바뀌지 않습니다. 캐릭터 참고 옵션은 기본적으로 꺼져 있으며, 켜면 현재 Character Draft가 읽기 전용 참고 자료로만 전달됩니다. 모든 재분석은 기존 generation override, timeout, 취소, JSON 검증·교정 흐름을 사용하며 실패하거나 취소되면 기존 Review Draft를 유지합니다.
 
 ## Character / Lorebook 저장
 
@@ -244,6 +255,6 @@ Import 전에 파싱된 메시지를 미리 확인할 수 있습니다.
 
 대화 파일을 가져오는 동작만으로 파일 내용이 외부 서비스에 전송되지는 않습니다. Prompt Conversion에서 대화 내역 참조를 ON으로 켜고 **대화 분석**을 명시적으로 실행하면 대화 가져오기 또는 선택한 채팅방의 범위와 원본 프롬프트가, 최종 **AI 분석**을 실행하면 원본 및 활성화된 대화 분석 기반 프롬프트가 사용자가 선택한 Marinara LLM Connection의 모델 제공자에게 전송될 수 있습니다.
 
-확장 전용 마지막 작업 session에는 원본 프롬프트, 대화 분석 기반 프롬프트와 편집 중인 draft가 저장됩니다. Imported conversation 원문 전체, 선택 채팅방 메시지 원문, 중간 Chunk 추출 결과, 원본 AI 응답, 실행 중 run ID는 저장하지 않습니다. Imported conversation은 이름과 메시지 수만 참조 정보로 남기므로 Marinara 재실행 후 다시 분석하려면 파일을 다시 선택해야 합니다. 저장된 Chat-derived Prompt와 Review draft는 계속 편집할 수 있습니다.
+확장 전용 마지막 작업 session에는 원본 프롬프트, 대화 분석 기반 프롬프트, 편집 중인 draft와 최근 AI 요청의 모델·실제 usage 영수증이 저장됩니다. Imported conversation 원문 전체, 선택 채팅방 메시지 원문, 중간 Chunk 추출 결과, 원본 AI 응답, 실행 중 run ID는 저장하지 않습니다. Imported conversation은 이름과 메시지 수만 참조 정보로 남기므로 Marinara 재실행 후 다시 분석하려면 파일을 다시 선택해야 합니다. 저장된 Chat-derived Prompt와 Review draft는 계속 편집할 수 있습니다.
 
 이 확장은 Marinara의 채팅 및 메시지 기능에 접근하기 위해 `full_page_access` 권한을 사용합니다.

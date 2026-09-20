@@ -14,8 +14,11 @@
   const SESSION_SCHEMA_VERSION = 1;
   const SAVED_DRAFT_SCHEMA_VERSION = 1;
   const SAVED_DRAFT_CLEANUP_THRESHOLD = 10;
+  const CHARACTER_IMPORT_PAGE_SIZE = 50;
   const SESSION_SAVE_DEBOUNCE_MS = 600;
   const SESSION_STORAGE_BUDGET_BYTES = 900_000;
+  const MAX_USAGE_RECEIPTS = 200;
+  const COST_FX_TTL_MS = 6 * 60 * 60 * 1000;
   const NON_TEXT_PROVIDERS = new Set(["image_generation", "video_generation", "audio"]);
   const migrationCenter = globalThis.MarinaraMigrationCenter || {};
   globalThis.MarinaraMigrationCenter = migrationCenter;
@@ -105,6 +108,23 @@
     };
   }
 
+  function normalizeStoredUsageReceipts(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(-MAX_USAGE_RECEIPTS).flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const usage = core.normalizeGenerationUsage({ usage: item.usage });
+      return [{
+        id: storedString(item.id),
+        task: storedString(item.task).trim() || "AI 분석",
+        connectionId: storedString(item.connectionId),
+        provider: storedString(item.provider),
+        model: storedString(item.model),
+        createdAt: storedString(item.createdAt),
+        usage,
+      }];
+    });
+  }
+
   function normalizeStoredSession(value) {
     if (!isRecord(value) || value.version !== SESSION_SCHEMA_VERSION) return null;
     let draft = null;
@@ -158,6 +178,7 @@
       chatAnalysisDone: value.chatAnalysisDone === true,
       chatAnalysisWarnings: storedStringArray(value.chatAnalysisWarnings),
       chatAnalysisMessage: storedString(value.chatAnalysisMessage),
+      generationReceipts: normalizeStoredUsageReceipts(value.generationReceipts),
       importedReference,
       lorebookSaveStrategy: assetCore.SAVE_STRATEGIES.includes(value.lorebookSaveStrategy)
         ? value.lorebookSaveStrategy
@@ -314,7 +335,7 @@
       const message =
         payload && typeof payload === "object" && typeof payload.error === "string"
           ? payload.error
-          : `Marinara API 요청이 실패했습니다 (${response.status}).`;
+          : `마리나라 API 요청이 실패했습니다 (${response.status}).`;
       const error = new Error(message);
       error.status = response.status;
       error.retryAfterMs = requestRetryCore.parseRetryAfter(response.headers?.get?.("Retry-After"));
@@ -348,6 +369,8 @@
         maxContext: Number.isFinite(Number(row.maxContext))
           ? Math.max(4_096, Math.round(Number(row.maxContext)))
           : chatCore.DEFAULT_MAX_CONTEXT,
+        maxTokensOverride: core.normalizeOptionalPositiveInteger(row.maxTokensOverride),
+        defaultParameters: row.defaultParameters,
         preferred: isTrue(row.defaultForAgents) || isTrue(row.isDefault),
       }))
       .sort((left, right) => Number(right.preferred) - Number(left.preferred) || left.name.localeCompare(right.name));
@@ -440,6 +463,7 @@
       lorebookResplitSelection: new Set(),
       lorebookCharacterContext: restoredSession?.lorebookCharacterContext || false,
       draftReanalysisInstructionsEnabled: false,
+      draftReanalysisInstructionPresetId: "",
       draftReanalysisInstructions: "",
       draftReanalysisPreserveLorebook: false,
       draftReanalysisOpen: false,
@@ -456,6 +480,8 @@
       settingsReturnNavigationView: initialView === "workspace" ? "workspace" : "prompt",
       settingsMessage: "",
       settingsSaving: false,
+      costFxUpdating: false,
+      costFxMessage: "",
       settingsEditorUnlocked: { contentFormattingInstructions: false },
       chatReferenceEnabled: restoredSession?.chatReferenceEnabled || false,
       chatSourceMode: restoredSession?.chatSourceMode || "import",
@@ -478,6 +504,7 @@
       chatAnalysisDone: restoredSession?.chatAnalysisDone || false,
       chatAnalysisWarnings: [...(restoredSession?.chatAnalysisWarnings || [])],
       chatAnalysisMessage: restoredSession?.chatAnalysisMessage || "",
+      generationReceipts: [...(restoredSession?.generationReceipts || [])],
       lorebookSaveStrategy: restoredSession?.lorebookSaveStrategy || "new",
       assetSaveScope: restoredSession?.assetSaveScope || "all",
       lorebooks: [],
@@ -582,6 +609,47 @@
       minIntervalMs: 0,
     });
 
+    const refreshCostExchangeRate = async (force = false) => {
+      if (state.costFxUpdating) return;
+      const currentRate = Number(state.settings.costUsdKrwRate) || 0;
+      const updatedAt = Number(state.settings.costFxUpdatedAt) || 0;
+      if (!force && currentRate > 0 && Date.now() - updatedAt < COST_FX_TTL_MS) return;
+      state.costFxUpdating = true;
+      state.costFxMessage = "USD→KRW 환율을 갱신하는 중입니다.";
+      if (state.view === "settings") render();
+      try {
+        const response = await fetch("https://api.frankfurter.dev/v1/latest?from=USD&to=KRW", {
+          cache: "no-store",
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        const rate = Number(payload?.rates?.KRW);
+        if (!Number.isFinite(rate) || rate <= 0) throw new Error("KRW 환율이 없습니다.");
+        const next = core.normalizeSettings({
+          ...state.settings,
+          costUsdKrwRate: rate,
+          costFxUpdatedAt: Date.now(),
+          costFxMarketDate: typeof payload.date === "string" ? payload.date : "",
+        });
+        await hostMarinara.storage.patch({ [SETTINGS_STORAGE_KEY]: next });
+        cachedSettings = next;
+        state.settings = cloneSettings(next);
+        if (state.settingsDraft) {
+          state.settingsDraft.costUsdKrwRate = next.costUsdKrwRate;
+          state.settingsDraft.costFxUpdatedAt = next.costFxUpdatedAt;
+          state.settingsDraft.costFxMarketDate = next.costFxMarketDate;
+        }
+        state.costFxMessage = "한화 환율을 갱신했습니다.";
+      } catch (error) {
+        state.costFxMessage = currentRate > 0
+          ? "환율 갱신에 실패해 마지막 정상 환율을 사용합니다."
+          : `한화 환율을 불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        state.costFxUpdating = false;
+        render();
+      }
+    };
+
     let sessionSaveTimer = null;
     let sessionPersistChain = Promise.resolve();
     let lastSavedSession = restoredSession ? JSON.stringify(restoredSession) : JSON.stringify(null);
@@ -636,6 +704,7 @@
         chatAnalysisDone: state.chatAnalysisDone,
         chatAnalysisWarnings: [...state.chatAnalysisWarnings],
         chatAnalysisMessage: state.chatAnalysisMessage,
+        generationReceipts: state.generationReceipts.slice(-MAX_USAGE_RECEIPTS),
         importedReference,
         lorebookSaveStrategy: state.lorebookSaveStrategy,
         assetSaveScope: state.assetSaveScope,
@@ -921,6 +990,7 @@
 
     let replacementDialog = null;
     let assetSaveDialog = null;
+    let characterImportDialog = null;
 
     const closeAssetSaveDialog = (proceed) => {
       if (!assetSaveDialog) return;
@@ -950,10 +1020,10 @@
         panel.setAttribute("aria-labelledby", "pc-asset-save-title");
         panel.setAttribute("aria-describedby", "pc-asset-save-copy");
         panel.append(
-          createElement("h3", { id: "pc-asset-save-title", text: "Marinara 자산을 저장할까요?" }),
+          createElement("h3", { id: "pc-asset-save-title", text: "마리나라 자산을 저장할까요?" }),
           createElement("p", {
             id: "pc-asset-save-copy",
-            text: `${scopeLabel} 저장을 실행합니다. ${scopeCopy} 프리셋 후보와 잔여 지침은 저장하지 않습니다.`,
+            text: `${scopeLabel} 저장을 실행합니다. ${scopeCopy}`,
           }),
         );
         const actions = createElement("div", { className: "pc-replace-actions" });
@@ -1020,6 +1090,323 @@
       });
     };
 
+    const closeCharacterImportDialog = (restoreFocus = true) => {
+      if (!characterImportDialog) return;
+      const { element, previousFocus } = characterImportDialog;
+      characterImportDialog = null;
+      element.remove();
+      dialog.removeAttribute("aria-hidden");
+      if (restoreFocus && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+
+    const characterListDetails = (row) => {
+      let data = row?.data;
+      if (typeof data === "string") {
+        try {
+          data = JSON.parse(data);
+        } catch {
+          data = {};
+        }
+      }
+      const name = isRecord(data) && typeof data.name === "string" && data.name.trim()
+        ? data.name.trim()
+        : "이름 없는 봇카드";
+      const avatarUrl = typeof row?.avatarPath === "string" && row.avatarPath.startsWith("/api/avatars/file/")
+        ? row.avatarPath
+        : "";
+      return { name, avatarUrl };
+    };
+
+    const renderCharacterImportDialog = () => {
+      const picker = characterImportDialog;
+      if (!picker) return;
+      const panel = picker.panel;
+      panel.textContent = "";
+      const header = createElement("header", { className: "pc-character-import-header" });
+      const heading = createElement("div");
+      heading.append(
+        createElement("h3", { id: "pc-character-import-title", text: "마리나라 봇카드 가져오기" }),
+        createElement("p", {
+          id: "pc-character-import-copy",
+          text: "지원되는 캐릭터 설정과 내장 로어북을 작업 결과로 가져옵니다. 원본 봇카드는 변경되지 않으며, 다시 저장하면 새 자산으로 생성됩니다.",
+        }),
+      );
+      const close = createElement("button", {
+        className: "pc-icon-button",
+        type: "button",
+        ariaLabel: "봇카드 선택창 닫기",
+      });
+      close.append(closeIcon());
+      close.addEventListener("click", () => closeCharacterImportDialog());
+      header.append(heading, close);
+
+      const search = createElement("form", { className: "pc-character-import-search" });
+      const searchInput = createElement("input");
+      searchInput.type = "search";
+      searchInput.value = picker.search;
+      searchInput.placeholder = "봇카드 이름 검색";
+      searchInput.setAttribute("aria-label", "봇카드 이름 검색");
+      searchInput.disabled = picker.loading || picker.importing;
+      searchInput.addEventListener("input", () => {
+        if (characterImportDialog === picker) picker.search = searchInput.value;
+      });
+      const searchButton = createElement("button", {
+        className: "pc-button pc-button-secondary",
+        type: "submit",
+        text: "검색",
+      });
+      searchButton.disabled = picker.loading || picker.importing;
+      search.addEventListener("submit", (event) => {
+        event.preventDefault();
+        void loadCharacterImportPage(false);
+      });
+      search.append(searchInput, searchButton);
+
+      const content = createElement("div", { className: "pc-character-import-content" });
+      if (picker.error) {
+        content.append(createElement("p", { className: "pc-character-import-status pc-character-import-error", role: "alert", text: picker.error }));
+      }
+      if (picker.rows.length) {
+        const list = createElement("div", { className: "pc-character-import-list" });
+        for (const row of picker.rows) {
+          if (!isRecord(row) || typeof row.id !== "string" || !row.id) continue;
+          const { name, avatarUrl } = characterListDetails(row);
+          const item = createElement("button", {
+            className: "pc-character-import-item",
+            type: "button",
+          });
+          item.setAttribute("aria-pressed", String(picker.selectedId === row.id));
+          item.disabled = picker.importing;
+          item.addEventListener("click", () => {
+            if (characterImportDialog !== picker) return;
+            picker.selectedId = row.id;
+            for (const button of panel.querySelectorAll(".pc-character-import-item")) {
+              button.setAttribute("aria-pressed", String(button === item));
+            }
+            const applyButton = panel.querySelector("[data-character-import-apply]");
+            if (applyButton instanceof HTMLButtonElement) applyButton.disabled = false;
+          });
+          const avatar = createElement("span", { className: "pc-character-import-avatar" });
+          const fallback = createElement("span", { text: name.slice(0, 1) || "?" });
+          avatar.append(fallback);
+          if (avatarUrl) {
+            const image = document.createElement("img");
+            image.src = avatarUrl;
+            image.alt = "";
+            image.loading = "lazy";
+            image.addEventListener("load", () => fallback.setAttribute("hidden", ""));
+            image.addEventListener("error", () => image.remove());
+            avatar.append(image);
+          }
+          item.append(avatar, createElement("span", { className: "pc-character-import-name", text: name }));
+          list.append(item);
+        }
+        content.append(list);
+        if (picker.hasMore) {
+          const loadMore = createElement("button", {
+            className: "pc-button pc-button-secondary pc-character-import-more",
+            type: "button",
+            text: "더 보기",
+          });
+          loadMore.disabled = picker.loading || picker.importing;
+          loadMore.addEventListener("click", () => void loadCharacterImportPage(true));
+          content.append(loadMore);
+        }
+      } else if (!picker.loading && !picker.error) {
+        content.append(createElement("p", { className: "pc-character-import-status", text: "표시할 봇카드가 없습니다." }));
+      }
+      if (picker.loading) {
+        content.append(createElement("p", { className: "pc-character-import-status", role: "status", text: "봇카드 목록을 불러오는 중입니다…" }));
+      }
+
+      const actions = createElement("div", { className: "pc-character-import-actions" });
+      const cancel = createElement("button", {
+        className: "pc-button pc-button-secondary",
+        type: "button",
+        text: "취소",
+      });
+      cancel.disabled = picker.importing;
+      cancel.addEventListener("click", () => closeCharacterImportDialog());
+      const apply = createElement("button", {
+        className: "pc-button pc-button-primary",
+        type: "button",
+        text: picker.importing ? "가져오는 중…" : "가져오기",
+      });
+      apply.dataset.characterImportApply = "true";
+      apply.disabled = picker.loading || picker.importing || !picker.selectedId;
+      apply.addEventListener("click", () => void importSelectedCharacter());
+      actions.append(cancel, apply);
+      panel.append(header, search, content, actions);
+    };
+
+    const loadCharacterImportPage = async (append) => {
+      const picker = characterImportDialog;
+      if (!picker || picker.loading || picker.importing) return;
+      picker.loading = true;
+      picker.error = "";
+      if (!append) {
+        picker.rows = [];
+        picker.selectedId = "";
+        picker.hasMore = false;
+      }
+      renderCharacterImportDialog();
+      const offset = append ? picker.rows.length : 0;
+      const params = new URLSearchParams({
+        limit: String(CHARACTER_IMPORT_PAGE_SIZE),
+        offset: String(offset),
+        sort: "name-asc",
+      });
+      if (picker.search.trim()) params.set("search", picker.search.trim());
+      try {
+        const response = await apiRequest(`/api/characters?${params.toString()}`);
+        if (characterImportDialog !== picker) return;
+        const rows = isRecord(response) && Array.isArray(response.items) ? response.items : [];
+        picker.rows = append ? [...picker.rows, ...rows] : rows;
+        picker.hasMore = isRecord(response) && response.hasMore === true;
+        if (!append && !picker.rows.some((row) => row?.id === picker.selectedId)) picker.selectedId = "";
+      } catch (error) {
+        if (characterImportDialog !== picker) return;
+        picker.error = `봇카드 목록을 불러오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+      } finally {
+        if (characterImportDialog === picker) {
+          picker.loading = false;
+          renderCharacterImportDialog();
+          if (!append) picker.panel.querySelector("input")?.focus();
+        }
+      }
+    };
+
+    const applyImportedCharacterDraft = (draft, name) => {
+      state.inputMode = "combined";
+      state.conversionMode = "preserve";
+      state.lorebookSourceEnabled = false;
+      state.lorebookSource = "";
+      state.sources = { combined: "", character: "", worldLore: "", systemStyle: "", other: "" };
+      state.draft = draft;
+      state.rawResponse = "";
+      state.repairResponse = "";
+      state.excludedEntries = new Set();
+      state.excludedPresetCandidates = new Set();
+      state.lorebookResplitSelection = new Set();
+      state.lorebookCharacterContext = false;
+      state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructionPresetId = "";
+      state.draftReanalysisInstructions = "";
+      state.draftReanalysisPreserveLorebook = false;
+      state.draftReanalysisOpen = true;
+      state.lorebookReanalysisOpen = false;
+      state.postprocessKind = "";
+      state.analysisConnectionId = state.selectedConnectionId;
+      state.draftReanalysisConnectionId = "";
+      state.lorebookResplitConnectionId = "";
+      state.chatReferenceEnabled = false;
+      state.chatSourceMode = "import";
+      state.importedConversationSource = null;
+      state.importedReference = null;
+      state.availableChats = [];
+      state.selectedChatId = "";
+      state.chatId = "";
+      state.chatName = "";
+      state.chatTurns = [];
+      state.chatLoadStatus = "idle";
+      state.chatLoadMessage = "대화 내역 참조가 꺼져 있습니다.";
+      state.chatRangeMode = "recent";
+      state.chatRecentTurns = 1;
+      state.includeRelationshipDevelopment = true;
+      state.chatDerivedPrompt = "";
+      state.chatDerivedDirty = false;
+      state.chatAnalysisDone = false;
+      state.chatAnalysisWarnings = [];
+      state.chatAnalysisMessage = "";
+      state.generationReceipts = [];
+      state.lorebookSaveStrategy = "new";
+      state.assetSaveScope = "all";
+      state.selectedLorebookId = "";
+      state.existingEntries = [];
+      state.existingEntriesStatus = "idle";
+      state.existingEntriesMessage = "";
+      state.lorebooks = [];
+      state.lorebooksStatus = "idle";
+      state.lorebooksMessage = "";
+      state.mergeDecisions = [];
+      state.mergeAnalysisStatus = "idle";
+      state.mergeAnalysisFingerprint = "";
+      state.mergeAnalysisMessage = "";
+      state.mergeAnalysisWarnings = [];
+      state.assetSaveConfirmed = false;
+      state.assetSaving = false;
+      state.assetSaveMessage = "";
+      state.assetSaveResult = null;
+      state.activeSavedDraftId = "";
+      state.savedDraftBaselineFingerprint = "";
+      state.savedDraftMessage = `마리나라 봇카드 “${name}”을 작업 결과로 가져왔습니다.`;
+      state.view = "review";
+      state.navigationView = "workspace";
+      state.restoreRangePending = false;
+      state.sessionTouched = true;
+      updateStatus("idle", "마리나라 봇카드를 현재 작업 결과로 가져왔습니다.");
+      render();
+      scheduleSessionSave();
+      void loadLorebooks();
+    };
+
+    const importSelectedCharacter = async () => {
+      const picker = characterImportDialog;
+      if (!picker || picker.importing || !picker.selectedId) return;
+      picker.importing = true;
+      picker.error = "";
+      renderCharacterImportDialog();
+      try {
+        const record = await apiRequest(`/api/characters/${encodeURIComponent(picker.selectedId)}`);
+        const draft = core.draftFromMarinaraCharacter(record);
+        const name = draft.character.name || "이름 없는 봇카드";
+        if (characterImportDialog !== picker) return;
+        closeCharacterImportDialog(false);
+        const proceed = await guardWorkingReplacement({
+          message: "봇카드를 가져오면 현재 작업 내용이 교체됩니다.",
+          saveLabel: "저장 후 가져오기",
+          discardLabel: "현재 작업 버리고 가져오기",
+        });
+        if (proceed) applyImportedCharacterDraft(draft, name);
+      } catch (error) {
+        if (characterImportDialog !== picker) return;
+        picker.error = `봇카드를 가져오지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
+        picker.importing = false;
+        renderCharacterImportDialog();
+      }
+    };
+
+    const openCharacterImportDialog = () => {
+      if (characterImportDialog || isWorking()) return;
+      const overlay = createElement("div", { className: "pc-replace-overlay pc-character-import-overlay" });
+      overlay.dataset.reviewTransient = "true";
+      const panel = createElement("section", { className: "pc-character-import-dialog", role: "dialog" });
+      panel.setAttribute("aria-modal", "true");
+      panel.setAttribute("aria-labelledby", "pc-character-import-title");
+      panel.setAttribute("aria-describedby", "pc-character-import-copy");
+      overlay.append(panel);
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay) closeCharacterImportDialog();
+      });
+      root.append(overlay);
+      dialog.setAttribute("aria-hidden", "true");
+      characterImportDialog = {
+        element: overlay,
+        panel,
+        rows: [],
+        selectedId: "",
+        search: "",
+        hasMore: false,
+        loading: false,
+        importing: false,
+        error: "",
+        previousFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      };
+      renderCharacterImportDialog();
+      panel.querySelector("input")?.focus();
+      void loadCharacterImportPage(false);
+    };
+
     const applySavedDraft = (draft) => {
       const session = normalizeStoredSession(draft?.snapshot);
       if (!session) return;
@@ -1044,6 +1431,7 @@
       state.lorebookResplitSelection = new Set();
       state.lorebookCharacterContext = session.lorebookCharacterContext;
       state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructionPresetId = "";
       state.draftReanalysisInstructions = "";
       state.draftReanalysisPreserveLorebook = false;
       state.draftReanalysisOpen = false;
@@ -1060,6 +1448,7 @@
       state.chatAnalysisDone = session.chatAnalysisDone;
       state.chatAnalysisWarnings = [...session.chatAnalysisWarnings];
       state.chatAnalysisMessage = session.chatAnalysisMessage;
+      state.generationReceipts = [...session.generationReceipts];
       state.importedReference = session.importedReference;
       state.lorebookSaveStrategy = session.lorebookSaveStrategy;
       state.assetSaveScope = session.assetSaveScope;
@@ -1125,6 +1514,7 @@
       state.lorebookResplitSelection = new Set();
       state.lorebookCharacterContext = false;
       state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructionPresetId = "";
       state.draftReanalysisInstructions = "";
       state.draftReanalysisPreserveLorebook = false;
       state.draftReanalysisOpen = false;
@@ -1144,6 +1534,7 @@
       state.chatAnalysisDone = false;
       state.chatAnalysisWarnings = [];
       state.chatAnalysisMessage = "";
+      state.generationReceipts = [];
       state.importedReference = null;
       state.lorebooks = [];
       state.lorebooksStatus = "idle";
@@ -1207,6 +1598,7 @@
       state.lorebookResplitSelection = new Set();
       state.lorebookCharacterContext = session.lorebookCharacterContext;
       state.draftReanalysisInstructionsEnabled = false;
+      state.draftReanalysisInstructionPresetId = "";
       state.draftReanalysisInstructions = "";
       state.draftReanalysisPreserveLorebook = false;
       state.draftReanalysisOpen = false;
@@ -1223,6 +1615,7 @@
       state.chatAnalysisDone = session.chatAnalysisDone;
       state.chatAnalysisWarnings = [...session.chatAnalysisWarnings];
       state.chatAnalysisMessage = session.chatAnalysisMessage;
+      state.generationReceipts = [...session.generationReceipts];
       state.importedReference = session.importedReference;
       state.lorebookSaveStrategy = session.lorebookSaveStrategy;
       state.assetSaveScope = session.assetSaveScope;
@@ -1244,14 +1637,213 @@
       const sources = core.normalizeSources(state.inputMode, state.sources);
       if (state.inputMode === "combined") return sources.combined.trim();
       return [
-        ["Character", sources.character],
-        ["World / Lore", sources.worldLore],
-        ["System / Style", sources.systemStyle],
-        ["Other", sources.other],
+        ["캐릭터", sources.character],
+        ["세계관 / 로어", sources.worldLore],
+        ["시스템 / 스타일", sources.systemStyle],
+        ["기타", sources.other],
       ]
         .filter(([, value]) => value.trim())
         .map(([label, value]) => `[${label}]\n${value.trim()}`)
         .join("\n\n");
+    };
+
+    const formatEstimatedTokens = (value) => `예상 토큰 ${Math.max(0, Number(value) || 0).toLocaleString()}`;
+
+    const activePromptSourceTexts = () => {
+      const sources = core.normalizeSources(state.inputMode, state.sources);
+      const values = state.inputMode === "combined"
+        ? [sources.combined]
+        : [sources.character, sources.worldLore, sources.systemStyle, sources.other];
+      if (state.lorebookSourceEnabled) values.push(state.lorebookSource);
+      if (state.chatReferenceEnabled) values.push(state.chatDerivedPrompt);
+      return values;
+    };
+
+    const promptSourceTokenTotal = () => activePromptSourceTexts()
+      .reduce((sum, value) => sum + chatCore.estimateTokens(value), 0);
+
+    const connectionDefaultMaxTokens = (connection) => {
+      let parsed = connection?.defaultParameters;
+      if (typeof parsed === "string") {
+        try {
+          parsed = JSON.parse(parsed);
+        } catch {
+          parsed = null;
+        }
+      }
+      if (!isRecord(parsed) || parsed.enabledParameters?.maxTokens === false) return 2_048;
+      const value = Number(parsed.maxTokens);
+      return Number.isFinite(value) && value > 0 ? Math.round(value) : 2_048;
+    };
+
+    const effectiveMaxOutputTokens = (connectionId = state.selectedConnectionId) => {
+      const connection = connectionById(connectionId);
+      let value = state.settings.maxTokensOverrideEnabled
+        ? state.settings.maxTokens
+        : state.settings.useConnectionDefaults
+          ? connectionDefaultMaxTokens(connection)
+          : 2_048;
+      if (connection?.maxTokensOverride) value = Math.min(value, connection.maxTokensOverride);
+      return Math.max(1, Math.round(Number(value) || 2_048));
+    };
+
+    const estimateMessageTokens = (messages) => chatCore.estimateTokens(JSON.stringify(
+      Array.isArray(messages) ? messages.map(({ role, content }) => ({ role, content })) : [],
+    ));
+
+    const formatCost = (value, currency) => {
+      const amount = Math.max(0, Number(value) || 0);
+      const digits = amount < 0.01 ? 6 : amount < 1 ? 4 : 2;
+      return `${currency} ${amount.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+    };
+
+    const formatWon = (value) => {
+      const won = Math.max(0, Number(value) || 0);
+      return `₩${won.toLocaleString("ko-KR", {
+        minimumFractionDigits: won < 1 ? 4 : won < 100 ? 2 : 0,
+        maximumFractionDigits: won < 1 ? 4 : won < 100 ? 2 : 0,
+      })}`;
+    };
+
+    const renderCostEstimate = ({ messages, connectionId, referenceOutputTokens, requestCount = 1, label = "현재 실행" }) => {
+      const connection = connectionById(connectionId);
+      const count = Math.max(1, Math.round(Number(requestCount) || 1));
+      const estimate = core.estimateGenerationCost({
+        inputTokens: estimateMessageTokens(messages) * count,
+        referenceOutputTokens: core.roundEstimatedTokensToHundred(referenceOutputTokens) * count,
+        maxOutputTokens: effectiveMaxOutputTokens(connectionId) * count,
+        settings: state.settings,
+        model: connection?.model || "",
+      });
+      const panel = createElement("section", { className: "pc-cost-estimate" });
+      const heading = createElement("div", { className: "pc-cost-estimate-heading" });
+      heading.append(
+        createElement("strong", { text: "AI 분석 예상 비용" }),
+        createElement("span", { text: label }),
+      );
+      panel.append(heading);
+      if (!estimate.rates) {
+        panel.append(createElement("div", {
+          className: "pc-cost-estimate-total",
+          text: `입력 약 ${estimate.inputTokens.toLocaleString()} · 출력 약 ${estimate.minimumOutputTokens.toLocaleString()}~${estimate.maximumOutputTokens.toLocaleString()} 토큰`,
+        }));
+        panel.append(createElement("p", {
+          className: "pc-cost-estimate-unavailable",
+          text: "현재 모델에 맞는 가격 프리셋이 없습니다. 설정에서 프리셋을 선택하거나 단가를 직접 입력하세요.",
+        }));
+        return panel;
+      }
+      const totalLow = estimate.minimumTotalCost;
+      const totalHigh = estimate.maximumTotalCost;
+      panel.append(createElement("div", {
+        className: "pc-cost-estimate-total",
+        text: `예상 비용 ${formatCost(totalLow, estimate.rates.currency)} ~ ${formatCost(totalHigh, estimate.rates.currency)}`,
+      }));
+      const usdKrwRate = Number(state.settings.costUsdKrwRate) || 0;
+      if (estimate.rates.currency === "USD" && usdKrwRate > 0) {
+        panel.append(createElement("div", {
+          className: "pc-cost-estimate-won",
+          text: `한화 약 ${formatWon(totalLow * usdKrwRate)} ~ ${formatWon(totalHigh * usdKrwRate)}`,
+        }));
+      }
+      const details = createElement("details");
+      details.append(createElement("summary", {
+        text: `입력 약 ${estimate.inputTokens.toLocaleString()} · 출력 약 ${estimate.minimumOutputTokens.toLocaleString()}~${estimate.maximumOutputTokens.toLocaleString()} 토큰`,
+      }));
+      const rows = createElement("dl", { className: "pc-cost-estimate-grid" });
+      for (const [term, description] of [
+        ["가격 기준", estimate.rates.label],
+        ["입력 단가", `${formatCost(estimate.rates.inputPerMillion, estimate.rates.currency)} / 100만 토큰`],
+        ["출력 단가", `${formatCost(estimate.rates.outputPerMillion, estimate.rates.currency)} / 100만 토큰`],
+        ["입력 예상 비용", formatCost(estimate.inputCost, estimate.rates.currency)],
+        ["출력 예상 비용", `${formatCost(estimate.minimumOutputCost, estimate.rates.currency)} ~ ${formatCost(estimate.maximumOutputCost, estimate.rates.currency)}`],
+        ["요청 횟수", `${count.toLocaleString()}회`],
+      ]) rows.append(createElement("dt", { text: term }), createElement("dd", { text: description }));
+      if (estimate.rates.currency === "USD" && usdKrwRate > 0) {
+        rows.append(
+          createElement("dt", { text: "적용 환율" }),
+          createElement("dd", { text: `USD 1 = ${formatWon(usdKrwRate)}` }),
+        );
+      }
+      details.append(rows, createElement("p", {
+        className: "pc-cost-estimate-note",
+        text: `${estimate.outputMinimumClamped ? "최소 예상 출력이 최대 출력 제한에 맞춰 조정되었습니다. " : ""}캐시·재시도·추가 JSON 교정은 포함하지 않은 실행 전 예상값이며 실제 청구 비용이 아닙니다.`,
+      }));
+      panel.append(details);
+      return panel;
+    };
+
+    const renderPrimaryAnalysisCostEstimate = () => {
+      if (!state.selectedConnectionId) return null;
+      const activeSources = core.normalizeSources(state.inputMode, state.sources);
+      const panel = renderCostEstimate({
+        messages: core.buildAnalysisMessages(state.inputMode, activeSources, state.settings, {
+          conversionMode: state.conversionMode,
+          chatDerivedPrompt: state.chatReferenceEnabled ? state.chatDerivedPrompt : "",
+          externalLorebookSource: state.lorebookSourceEnabled ? state.lorebookSource.trim() : "",
+        }),
+        connectionId: state.selectedConnectionId,
+        referenceOutputTokens: promptSourceTokenTotal(),
+        label: "프롬프트 변환 1회 기준",
+      });
+      panel.dataset.primaryCostEstimate = "true";
+      return panel;
+    };
+
+    const refreshPrimaryAnalysisCostEstimate = () => {
+      const current = body.querySelector("[data-primary-cost-estimate]");
+      const next = renderPrimaryAnalysisCostEstimate();
+      if (current && next) current.replaceWith(next);
+    };
+
+    const renderDraftReanalysisCostEstimate = () => {
+      if (!state.draft) return null;
+      const connectionId = postprocessConnectionId(state.draftReanalysisConnectionId);
+      if (!connectionId) return null;
+      const panel = renderCostEstimate({
+        messages: core.buildDraftReanalysisMessages(state.draft, state.settings, {
+          userInstructions: state.draftReanalysisInstructionsEnabled
+            ? state.draftReanalysisInstructions.trim()
+            : "",
+          preserveLorebook: state.draftReanalysisPreserveLorebook,
+        }),
+        connectionId,
+        referenceOutputTokens: currentResultTokenEstimate().totalTokens,
+        label: "작업 결과 재분석 1회 기준",
+      });
+      panel.dataset.draftReanalysisCostEstimate = "true";
+      return panel;
+    };
+
+    const refreshDraftReanalysisCostEstimate = () => {
+      const current = body.querySelector("[data-draft-reanalysis-cost-estimate]");
+      const next = renderDraftReanalysisCostEstimate();
+      if (current && next) current.replaceWith(next);
+    };
+
+    const refreshPromptTokenTotal = () => {
+      const total = body.querySelector("[data-prompt-token-total]");
+      if (total instanceof HTMLElement) total.textContent = `프롬프트 소스 전체 ${formatEstimatedTokens(promptSourceTokenTotal())}`;
+    };
+
+    const makeEstimatedPromptField = (label, value, assign, options = {}) => {
+      const editor = makeTextInput(value, (nextValue) => {
+        assign(nextValue);
+      }, options);
+      const estimate = createElement("small", {
+        className: "pc-token-estimate",
+        text: formatEstimatedTokens(chatCore.estimateTokens(value)),
+      });
+      editor.addEventListener("input", () => {
+        estimate.textContent = formatEstimatedTokens(chatCore.estimateTokens(editor.value));
+        refreshPromptTokenTotal();
+        refreshPrimaryAnalysisCostEstimate();
+      });
+      const field = createElement("label", { className: "pc-field" });
+      const heading = createElement("span", { className: "pc-field-heading" });
+      heading.append(createElement("span", { className: "pc-label", text: label }), estimate);
+      field.append(heading, editor);
+      return { editor, field };
     };
 
     const selectedConnection = () =>
@@ -1313,7 +1905,21 @@
         body: { runId, connectionId },
       });
 
-    const generate = async (messages, runId, connectionId = state.selectedConnectionId) => {
+    const recordGenerationReceipt = (response, task, connectionId) => {
+      const connection = connectionById(connectionId);
+      state.generationReceipts = [...state.generationReceipts, {
+        id: createRunId(),
+        task,
+        connectionId,
+        provider: connection?.provider || "",
+        model: connection?.model || "",
+        createdAt: new Date().toISOString(),
+        usage: core.normalizeGenerationUsage(response),
+      }].slice(-MAX_USAGE_RECEIPTS);
+      scheduleSessionSave();
+    };
+
+    const generate = async (messages, runId, connectionId = state.selectedConnectionId, task = "AI 분석") => {
       const activeConnectionId = connectionById(connectionId)?.id || "";
       if (!activeConnectionId) throw new Error("사용할 AI 모델 연결을 선택하세요.");
       state.activeGenerationConnectionId = activeConnectionId;
@@ -1330,7 +1936,7 @@
         : null;
       const parameters = core.buildGenerationParameters(state.settings);
       try {
-        return await generationRequestScheduler.run("/api/generate/raw", {
+        const response = await generationRequestScheduler.run("/api/generate/raw", {
           method: "POST",
           signal: controller.signal,
           body: {
@@ -1346,6 +1952,8 @@
             render();
           },
         });
+        recordGenerationReceipt(response, task, activeConnectionId);
+        return response;
       } catch (error) {
         if (timedOut) throw new Error(`${timeoutSeconds}초 응답 제한을 초과해 분석을 중단했습니다.`);
         throw error;
@@ -1438,6 +2046,8 @@
             externalLorebookSource: activeLorebookSource,
           }),
           state.activeRunId,
+          state.selectedConnectionId,
+          "프롬프트 변환",
         );
         if (requestNumber !== state.activeRequest) return;
         if (firstResult?.aborted || state.abortRequested) {
@@ -1471,6 +2081,8 @@
               validationError instanceof Error ? validationError.message : String(validationError),
             ),
             state.activeRunId,
+            state.selectedConnectionId,
+            `프롬프트 변환 · JSON 교정 ${attempt + 1}`,
           );
           if (requestNumber !== state.activeRequest) return;
           if (repairResult?.aborted || state.abortRequested) {
@@ -1500,6 +2112,7 @@
         state.excludedPresetCandidates = new Set();
         state.lorebookResplitSelection = new Set();
         state.draftReanalysisInstructionsEnabled = false;
+        state.draftReanalysisInstructionPresetId = "";
         state.draftReanalysisInstructions = "";
         state.draftReanalysisPreserveLorebook = false;
         state.draftReanalysisOpen = false;
@@ -1759,6 +2372,28 @@
           text: state.existingEntriesMessage || "기존 로어북을 선택하면 항목을 불러옵니다.",
         }));
         return wrapper;
+      }
+      const costPlan = mergeAnalysisPlan();
+      if (state.selectedConnectionId && costPlan.draftRows.length && costPlan.chunks.length) {
+        wrapper.append(renderCostEstimate({
+          messages: mergeCore.buildAnalysisMessages({
+            analysisStage: "compare",
+            chunkIndex: 1,
+            totalChunks: costPlan.chunks.length,
+            selectedLorebook: costPlan.lorebook,
+            draftLorebook: {
+              name: state.draft.lorebook.name,
+              description: state.draft.lorebook.description,
+              category: state.draft.lorebook.category,
+            },
+            draftEntries: costPlan.draftRows,
+            existingEntries: costPlan.chunks[0],
+          }),
+          connectionId: state.selectedConnectionId,
+          referenceOutputTokens: chatCore.estimateTokens(JSON.stringify(costPlan.draftRows)),
+          requestCount: costPlan.requestCount,
+          label: `로어북 병합 분석 ${costPlan.requestCount.toLocaleString()}회 기준`,
+        }));
       }
       const analysisActions = createElement("div", { className: "pc-chat-actions pc-merge-analysis-actions" });
       const analyzeButton = createElement("button", {
@@ -2141,7 +2776,8 @@
       let lastError = null;
       for (let attempt = 0; attempt <= state.settings.jsonRepairRetries; attempt += 1) {
         state.activeRunId = createRunId();
-        const result = await generate(requestMessages, state.activeRunId, connectionId);
+        const task = attempt === 0 ? label : `${label} · JSON 교정 ${attempt}`;
+        const result = await generate(requestMessages, state.activeRunId, connectionId, task);
         if (requestNumber !== state.activeRequest) throw new DOMException("Superseded", "AbortError");
         if (result?.aborted || state.abortRequested) throw new DOMException("Aborted", "AbortError");
         if (!result || typeof result.content !== "string") throw new Error(`${label} API가 내용(content) 문자열을 반환하지 않았습니다.`);
@@ -2229,6 +2865,8 @@
                 originalPrompt: originalPromptText(),
                 extractionResults: group,
                 includeRelationshipDevelopment: state.includeRelationshipDevelopment,
+                languageMode: state.settings.languageMode,
+                targetLanguage: state.settings.targetLanguage,
               }),
               chatCore.parseReduceResponse,
               "Intermediate Reduce",
@@ -2257,6 +2895,8 @@
             originalPrompt: originalPromptText(),
             extractionResults: reduceInputs,
             includeRelationshipDevelopment: state.includeRelationshipDevelopment,
+            languageMode: state.settings.languageMode,
+            targetLanguage: state.settings.targetLanguage,
           }),
           chatCore.parseReduceResponse,
           "Reduce",
@@ -2320,6 +2960,7 @@
         cachedSettings = normalized;
         state.settings = cloneSettings(normalized);
         state.settingsDraft = cloneSettings(normalized);
+        scheduleSessionSave();
         state.settingsMessage = "AI 분석 설정을 저장했습니다.";
       } catch (error) {
         state.settingsMessage = `설정을 저장하지 못했습니다: ${error instanceof Error ? error.message : String(error)}`;
@@ -2329,12 +2970,12 @@
       }
     };
 
-    const makeToggle = (labelText, checked, onChange, hint) => {
+    const makeToggle = (labelText, checked, onChange, hint, options = {}) => {
       const wrapper = createElement("label", { className: "pc-setting-toggle" });
       const input = createElement("input");
       input.type = "checkbox";
       input.checked = checked;
-      input.disabled = state.settingsSaving;
+      input.disabled = state.settingsSaving || !!options.disabled;
       input.addEventListener("change", () => onChange(input.checked));
       const copy = createElement("span");
       copy.append(createElement("strong", { text: labelText }));
@@ -2358,6 +2999,38 @@
     const renderSettings = () => {
       const settings = state.settingsDraft || cloneSettings(state.settings);
       const container = createElement("div", { className: "pc-settings-view" });
+
+      const language = createElement("section", { className: "pc-settings-section" });
+      language.append(createElement("h3", { text: "언어" }));
+      const languageModeSelect = createElement("select");
+      languageModeSelect.append(option("source", "원문 언어 유지"), option("translate", "다른 언어로 변환"));
+      languageModeSelect.value = settings.languageMode;
+      languageModeSelect.disabled = state.settingsSaving;
+      languageModeSelect.addEventListener("change", () => {
+        settings.languageMode = languageModeSelect.value;
+        render();
+      });
+      const targetLanguageSelect = createElement("select");
+      for (const [value, label] of [
+        ["English", "English"], ["Korean", "한국어"], ["Japanese", "日本語"], ["Chinese", "中文"],
+      ]) targetLanguageSelect.append(option(value, label));
+      targetLanguageSelect.value = settings.targetLanguage;
+      targetLanguageSelect.disabled = settings.languageMode === "source" || state.settingsSaving;
+      targetLanguageSelect.addEventListener("change", () => { settings.targetLanguage = targetLanguageSelect.value; });
+      const languageGrid = createElement("div", { className: "pc-settings-grid" });
+      languageGrid.append(makeField("출력 언어", languageModeSelect), makeField("대상 언어", targetLanguageSelect));
+      language.append(
+        languageGrid,
+        makeToggle(
+          "언어 고유 표현 보존",
+          settings.preserveLanguageSpecificExpressions,
+          (checked) => { settings.preserveLanguageSpecificExpressions = checked; render(); },
+          "번역으로 의미 있는 말투·호칭·voice·언어 고유 표현의 의미가 손실될 때만 원어를 함께 보존합니다.",
+          { disabled: settings.languageMode === "source" },
+        ),
+        createElement("p", { className: "pc-setting-note", text: "원문 언어 유지 시 혼합 언어도 그대로 유지됩니다." }),
+      );
+      container.append(language);
 
       const generation = createElement("section", { className: "pc-settings-section" });
       generation.append(createElement("h3", { text: "생성 설정" }));
@@ -2406,20 +3079,89 @@
       generation.append(generationGrid);
       container.append(generation);
 
-      const language = createElement("section", { className: "pc-settings-section" });
-      language.append(
-        createElement("h3", { text: "언어" }),
-        makeToggle(
-          "언어 고유 표현 보존",
-          settings.preserveLanguageSpecificExpressions,
-          (checked) => {
-            settings.preserveLanguageSpecificExpressions = checked;
-            render();
-          },
-          "기본값은 끔입니다. 켜면 번역으로 의미가 손실되는 말투·호칭·언어 고유 표현만 영어 설명과 원어를 함께 보존합니다.",
-        ),
+      const pricing = createElement("section", { className: "pc-settings-section" });
+      pricing.append(
+        createElement("h3", { text: "실행 전 예상 비용" }),
+        createElement("p", {
+          className: "pc-section-copy",
+          text: "입력 예상 토큰과 출력 예상 범위로 계산합니다. 실제 API usage나 실제 청구 비용이 아닙니다.",
+        }),
       );
-      container.append(language);
+      const presetSelect = createElement("select");
+      for (const [value, label] of [
+        ["auto", "모델명으로 자동 선택"],
+        ["deepseek-v4-pro", "DeepSeek V4 Pro"],
+        ["glm-5.2", "GLM 5.2"],
+        ["custom", "직접 입력"],
+      ]) presetSelect.append(option(value, label));
+      presetSelect.value = settings.costPreset;
+      presetSelect.disabled = state.settingsSaving;
+      presetSelect.addEventListener("change", () => {
+        settings.costPreset = presetSelect.value;
+        render();
+      });
+      const pricingGrid = createElement("div", { className: "pc-settings-grid" });
+      pricingGrid.append(makeField("가격 프리셋", presetSelect));
+      if (settings.costPreset === "custom") {
+        const currencyInput = createElement("input");
+        currencyInput.value = settings.costCurrency;
+        currencyInput.maxLength = 8;
+        currencyInput.disabled = state.settingsSaving;
+        currencyInput.addEventListener("input", () => {
+          settings.costCurrency = currencyInput.value;
+        });
+        pricingGrid.append(
+          makeField("통화", currencyInput, "예: USD"),
+          makeNumberSetting("입력 단가", settings.costInputPerMillion, (value) => {
+            settings.costInputPerMillion = Number(value);
+          }, { min: 0, max: 1000000, step: 0.000001, hint: "100만 토큰 기준" }),
+          makeNumberSetting("출력 단가", settings.costOutputPerMillion, (value) => {
+            settings.costOutputPerMillion = Number(value);
+          }, { min: 0, max: 1000000, step: 0.000001, hint: "100만 토큰 기준" }),
+        );
+      }
+      pricing.append(pricingGrid);
+      if (settings.costPreset === "deepseek-v4-pro" || settings.costPreset === "auto") {
+        pricing.append(createElement("p", {
+          className: "pc-setting-note",
+          text: "DeepSeek V4 Pro: 오프피크 입력 $0.66·출력 $1.98, 피크 입력 $1.32·출력 $3.96. KST 평일 10:00~13:00, 15:00~19:00이 피크이며 주말은 오프피크입니다.",
+        }));
+      }
+      if (settings.costPreset === "glm-5.2" || settings.costPreset === "auto") {
+        pricing.append(createElement("p", {
+          className: "pc-setting-note",
+          text: "GLM 5.2: 입력 $1.40, 출력 $4.40 / 100만 토큰.",
+        }));
+      }
+      const fxRow = createElement("div", { className: "pc-cost-fx-row" });
+      const fxRate = Number(settings.costUsdKrwRate) || 0;
+      const fxUpdatedAt = Number(settings.costFxUpdatedAt) || 0;
+      const fxCopy = createElement("div");
+      fxCopy.append(
+        createElement("strong", { text: fxRate > 0 ? `USD 1 = ${formatWon(fxRate)}` : "한화 환율 없음" }),
+        createElement("small", {
+          text: fxUpdatedAt > 0
+            ? `${settings.costFxMarketDate ? `${settings.costFxMarketDate} 시장 기준 · ` : ""}${new Date(fxUpdatedAt).toLocaleString("ko-KR")} 갱신`
+            : "Frankfurter 환율을 자동으로 불러옵니다.",
+        }),
+      );
+      const fxRefresh = createElement("button", {
+        className: "pc-button pc-button-secondary pc-button-small",
+        type: "button",
+        text: state.costFxUpdating ? "환율 갱신 중…" : "환율 새로고침",
+      });
+      fxRefresh.disabled = state.costFxUpdating || state.settingsSaving;
+      fxRefresh.addEventListener("click", () => void refreshCostExchangeRate(true));
+      fxRow.append(fxCopy, fxRefresh);
+      pricing.append(fxRow);
+      if (state.costFxMessage) {
+        pricing.append(createElement("p", {
+          className: "pc-setting-note",
+          role: "status",
+          text: state.costFxMessage,
+        }));
+      }
+      container.append(pricing);
 
       const promptEditor = (title, key, defaultValue) => {
         const section = createElement("section", { className: "pc-settings-section" });
@@ -2499,7 +3241,7 @@
           className: "pc-section-copy",
           text: state.chatDerivedPrompt
             ? "기존 대화 분석 기반 프롬프트는 유지되지만 최종 변환 입력에서는 제외됩니다."
-            : "켜면 대화 가져오기 내용 또는 선택한 Marinara 채팅방을 분석할 수 있습니다.",
+            : "켜면 대화 가져오기 내용 또는 선택한 마리나라 채팅방을 분석할 수 있습니다.",
         }));
         return section;
       }
@@ -2523,7 +3265,7 @@
 
       if (state.chatSourceMode === "chat") {
         const chatSelect = createElement("select");
-        chatSelect.setAttribute("aria-label", "참조할 Marinara 채팅방");
+        chatSelect.setAttribute("aria-label", "참조할 마리나라 채팅방");
         if (state.availableChats.length === 0) {
           chatSelect.append(option("", state.chatListStatus === "loading" ? "채팅방 불러오는 중…" : "선택 가능한 채팅방 없음"));
         } else {
@@ -2620,6 +3362,20 @@
       });
       analyzeChatButton.disabled = isWorking() || !state.selectedConnectionId || !plan.turns.length;
       analyzeChatButton.addEventListener("click", analyzeConversation);
+      if (state.selectedConnectionId && plan.chunks.length) {
+        section.append(renderCostEstimate({
+          messages: chatCore.buildExtractionMessages({
+            originalPrompt: originalPromptText(),
+            chunk: plan.chunks[0].text,
+            chunkIndex: 1,
+            totalChunks: plan.chunks.length,
+          }),
+          connectionId: state.selectedConnectionId,
+          referenceOutputTokens: chatCore.estimateTokens(originalPromptText()),
+          requestCount: plan.chunks.length + 1,
+          label: `대화 구간 추출 ${plan.chunks.length.toLocaleString()}회 + 최종 통합 1회`,
+        }));
+      }
       const actions = createElement("div", { className: "pc-chat-actions" });
       actions.append(relationshipOption, analyzeChatButton);
       section.append(actions);
@@ -2635,13 +3391,15 @@
           render();
         });
         derivedHeading.append(createElement("h3", { text: "대화 분석 기반 프롬프트" }), clearButton);
-        const editor = makeTextInput(state.chatDerivedPrompt, (value) => {
+        const derivedPrompt = makeEstimatedPromptField("내용", state.chatDerivedPrompt, (value) => {
           state.chatDerivedPrompt = value;
           state.chatDerivedDirty = true;
         }, { multiline: true, rows: 12, className: "pc-chat-derived-editor" });
+        const editor = derivedPrompt.editor;
         editor.disabled = isWorking();
         editor.setAttribute("aria-label", "대화 분석 기반 프롬프트");
-        section.append(derivedHeading, editor);
+        derivedPrompt.field.classList.add("pc-chat-derived-field");
+        section.append(derivedHeading, derivedPrompt.field);
         if (state.chatAnalysisMessage) section.append(createElement("p", { className: "pc-chat-estimate", text: state.chatAnalysisMessage }));
         if (state.chatAnalysisWarnings.length) {
           const warnings = createElement("details", { className: "pc-chat-warnings" });
@@ -2683,18 +3441,14 @@
 
       const sourceFields = createElement("div", { className: "pc-source-fields" });
       if (state.inputMode === "combined") {
-        sourceFields.append(
-          makeField(
-            "전체 프롬프트",
-            makeTextInput(
-              state.sources.combined,
-              (value) => {
-                state.sources.combined = value;
-              },
-              { multiline: true, rows: 15, placeholder: "외부 플랫폼의 전체 프롬프트를 붙여 넣으세요." },
-            ),
-          ),
-        );
+        sourceFields.append(makeEstimatedPromptField(
+          "전체 프롬프트",
+          state.sources.combined,
+          (value) => {
+            state.sources.combined = value;
+          },
+          { multiline: true, rows: 15, placeholder: "외부 플랫폼의 전체 프롬프트를 붙여 넣으세요." },
+        ).field);
       } else {
         const separated = [
           ["캐릭터", "character", "캐릭터의 정체성, 성격, 외모, 말투, 배경 등"],
@@ -2703,18 +3457,14 @@
           ["기타", "other", "분류가 불분명하거나 추가로 보존할 내용"],
         ];
         for (const [label, key, placeholder] of separated) {
-          sourceFields.append(
-            makeField(
-              label,
-              makeTextInput(
-                state.sources[key],
-                (value) => {
-                  state.sources[key] = value;
-                },
-                { multiline: true, rows: 5, placeholder },
-              ),
-            ),
-          );
+          sourceFields.append(makeEstimatedPromptField(
+            label,
+            state.sources[key],
+            (value) => {
+              state.sources[key] = value;
+            },
+            { multiline: true, rows: 5, placeholder },
+          ).field);
         }
       }
       for (const control of sourceFields.querySelectorAll("textarea")) control.disabled = isWorking();
@@ -2740,7 +3490,8 @@
       modeSection.append(lorebookSourceToggle);
 
       if (state.lorebookSourceEnabled) {
-        const lorebookSourceEditor = makeTextInput(
+        const lorebookSource = makeEstimatedPromptField(
+          "외부 로어북",
           state.lorebookSource,
           (value) => {
             state.lorebookSource = value;
@@ -2751,11 +3502,18 @@
             placeholder: "외부 플랫폼의 별도 로어북 내용을 붙여 넣으세요.",
           },
         );
+        const lorebookSourceEditor = lorebookSource.editor;
         lorebookSourceEditor.disabled = isWorking();
-        const lorebookSourceField = makeField("외부 로어북", lorebookSourceEditor);
+        const lorebookSourceField = lorebookSource.field;
         lorebookSourceField.id = "pc-lorebook-source-field";
         modeSection.append(lorebookSourceField);
       }
+      const promptTokenTotal = createElement("p", {
+        className: "pc-prompt-token-total",
+        text: `프롬프트 소스 전체 ${formatEstimatedTokens(promptSourceTokenTotal())}`,
+      });
+      promptTokenTotal.dataset.promptTokenTotal = "true";
+      modeSection.append(promptTokenTotal);
 
       const conversionSection = createElement("section", { className: "pc-section" });
       conversionSection.append(createElement("h3", { text: "3. 변환 방식" }));
@@ -2809,6 +3567,8 @@
       refreshButton.addEventListener("click", loadConnections);
       connectionRow.append(connectionSelect, refreshButton);
       connectionSection.append(connectionRow);
+      const primaryCostEstimate = renderPrimaryAnalysisCostEstimate();
+      if (primaryCostEstimate) connectionSection.append(primaryCostEstimate);
       container.append(modeSection, renderChatReference(), conversionSection, connectionSection);
       if (state.status !== "idle") container.append(renderStatus());
       const raw = renderRawError();
@@ -2835,7 +3595,9 @@
         characterIds: Array.isArray(row.characterIds) ? row.characterIds.filter((id) => typeof id === "string") : [],
         personaIds: Array.isArray(row.personaIds) ? row.personaIds.filter((id) => typeof id === "string") : [],
         personaId: typeof row.personaId === "string" ? row.personaId : "",
-      }));
+      }))
+        .filter((row) => core.isSelectableLorebookName(row.name))
+        .sort((left, right) => core.compareKoreanNames(left.name, right.name) || left.id.localeCompare(right.id));
     };
 
     const normalizeExistingEntries = (value) => (Array.isArray(value) ? value : []).flatMap((entry) => {
@@ -3013,7 +3775,8 @@
       let lastError = null;
       for (let attempt = 0; attempt <= state.settings.jsonRepairRetries; attempt += 1) {
         state.activeRunId = createRunId();
-        const result = await generate(requestMessages, state.activeRunId);
+        const task = attempt === 0 ? label : `${label} · JSON 교정 ${attempt}`;
+        const result = await generate(requestMessages, state.activeRunId, state.selectedConnectionId, task);
         if (requestNumber !== state.activeRequest) throw new DOMException("Superseded", "AbortError");
         if (result?.aborted || state.abortRequested) throw new DOMException("Aborted", "AbortError");
         if (!result || typeof result.content !== "string") throw new Error(`${label} API가 내용(content) 문자열을 반환하지 않았습니다.`);
@@ -3202,6 +3965,97 @@
     };
 
     const currentSaveFingerprint = () => currentSaveFingerprints().all;
+
+    const currentResultTokenEstimate = () => {
+      const characterValue = assetCore.buildCharacterPayload(state.draft).data;
+      const lorebookEntries = (state.draft?.lorebook?.entries || []).flatMap((entry, index) => {
+        if (state.excludedEntries.has(index)) return [];
+        if (state.lorebookSaveStrategy !== "merge") return [assetCore.buildEntryPayload(entry)];
+        const decision = state.mergeDecisions[index];
+        if (!isRecord(decision)) return [assetCore.buildEntryPayload(entry)];
+        if (["skip", "conflict"].includes(decision.action)) return [];
+        return [decision.finalEntry ? assetCore.buildEntryPayload(decision.finalEntry) : assetCore.buildEntryPayload(entry)];
+      });
+      const lorebookValue = {
+        ...(state.lorebookSaveStrategy === "new" ? assetCore.buildLorebookPayload(state.draft, "") : {}),
+        entries: lorebookEntries,
+      };
+      const characterTokens = core.estimateStoredTextTokens(characterValue, chatCore.estimateTokens);
+      const lorebookTokens = core.estimateStoredTextTokens(lorebookValue, chatCore.estimateTokens);
+      return { characterTokens, lorebookTokens, totalTokens: characterTokens + lorebookTokens };
+    };
+
+    const refreshReviewTokenSummary = () => {
+      if (!state.draft) return;
+      const estimate = currentResultTokenEstimate();
+      const values = {
+        character: estimate.characterTokens,
+        lorebook: estimate.lorebookTokens,
+        total: estimate.totalTokens,
+      };
+      for (const [key, value] of Object.entries(values)) {
+        for (const element of body.querySelectorAll(`[data-result-token-${key}]`)) {
+          if (element instanceof HTMLElement) element.textContent = formatEstimatedTokens(value);
+        }
+      }
+    };
+
+    const renderResultTokenPopover = (estimate, trigger) => {
+      const panel = createElement("section", { className: "pc-result-token-popover" });
+      panel.id = "pc-result-token-popover";
+      panel.hidden = true;
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-labelledby", "pc-result-token-popover-title");
+      const header = createElement("div", { className: "pc-result-token-popover-header" });
+      const title = createElement("h4", { text: "작업 결과 예상 토큰" });
+      title.id = "pc-result-token-popover-title";
+      const close = createElement("button", {
+        className: "pc-result-token-close",
+        type: "button",
+        text: "×",
+      });
+      close.setAttribute("aria-label", "작업 결과 예상 토큰 창 닫기");
+      const hide = () => {
+        panel.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        trigger.focus();
+      };
+      close.addEventListener("click", hide);
+      panel.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        hide();
+      });
+      header.append(title, close);
+      panel.append(
+        header,
+        createElement("p", {
+          className: "pc-section-copy",
+          text: "현재 저장 대상 텍스트를 계산한 예상값입니다. API 사용량이나 실제 청구 토큰이 아닙니다.",
+        }),
+      );
+      const summary = createElement("dl", { className: "pc-token-summary-grid" });
+      for (const [key, label, value] of [
+        ["character", "캐릭터", estimate.characterTokens],
+        ["lorebook", "로어북", estimate.lorebookTokens],
+        ["total", "전체 결과", estimate.totalTokens],
+      ]) {
+        const amount = createElement("dd", { text: formatEstimatedTokens(value) });
+        amount.dataset[`resultToken${key[0].toUpperCase()}${key.slice(1)}`] = "true";
+        const row = createElement("div", { className: "pc-token-summary-row" });
+        row.append(createElement("dt", { text: label }), amount);
+        summary.append(row);
+      }
+      panel.append(summary);
+      trigger.addEventListener("click", () => {
+        const shouldOpen = panel.hidden;
+        panel.hidden = !shouldOpen;
+        trigger.setAttribute("aria-expanded", String(shouldOpen));
+        if (shouldOpen) close.focus();
+      });
+      return panel;
+    };
 
     const emptySavePart = (name = "") => ({ status: "idle", id: "", name, reason: "", error: "" });
     const createSaveResult = (fingerprints, strategy) => ({
@@ -3610,7 +4464,7 @@
 
     const savedDraftStatus = (draft) => {
       const result = draft.snapshot?.assetSaveResult;
-      if (saveResultComplete(result)) return "Marinara 저장 완료";
+      if (saveResultComplete(result)) return "마리나라 저장 완료";
       const hasSuccess = (
         !!result && [result.character, result.lorebook, result.link]
           .some((part) => part?.status === "success")
@@ -3721,6 +4575,7 @@
 
     const renderReview = () => {
       const draft = state.draft;
+      const resultTokenEstimate = currentResultTokenEstimate();
       const container = createElement("div", { className: "pc-review-view" });
       container.append(renderSavedDraftsPanel());
 
@@ -3733,6 +4588,22 @@
       });
       postprocess.append(createElement("summary", { text: "작업 결과 재분석" }));
       const postprocessBody = createElement("div", { className: "pc-collapsible-review-body" });
+      const characterImportLauncher = createElement("section", { className: "pc-character-import-launcher" });
+      const characterImportCopy = createElement("div");
+      characterImportCopy.append(
+        createElement("h4", { text: "분석 대상 가져오기" }),
+        createElement("p", { text: "마리나라에 저장된 봇카드를 현재 작업 결과로 불러옵니다." }),
+      );
+      const characterImportButton = createElement("button", {
+        className: "pc-button pc-button-secondary",
+        type: "button",
+        text: "마리나라 봇카드 가져오기",
+      });
+      characterImportButton.dataset.reviewTransient = "true";
+      characterImportButton.disabled = isWorking();
+      characterImportButton.addEventListener("click", openCharacterImportDialog);
+      characterImportLauncher.append(characterImportCopy, characterImportButton);
+      postprocessBody.append(characterImportLauncher);
       postprocessBody.append(
         createElement("p", {
           className: "pc-section-copy",
@@ -3758,7 +4629,7 @@
         createElement("span", { text: "사용자 지침 추가" }),
       );
       const preserveLorebookOption = createElement("label", {
-        className: "pc-setting-toggle pc-postprocess-preserve-lorebook",
+        className: "pc-setting-toggle pc-analysis-inline-option pc-postprocess-preserve-lorebook",
       });
       const preserveLorebookInput = createElement("input");
       preserveLorebookInput.type = "checkbox";
@@ -3783,16 +4654,53 @@
           state.draftReanalysisConnectionId,
           (value) => {
             state.draftReanalysisConnectionId = value;
+            render();
           },
           "작업 결과 재분석 모델",
         ),
       );
       postprocessBody.append(postprocessOptions);
+      const instructionPresets = createElement("section", { className: "pc-instruction-presets" });
+      instructionPresets.append(createElement("span", { className: "pc-instruction-presets-label", text: "사용자 지침 프리셋" }));
+      const instructionPresetButtons = createElement("div", { className: "pc-instruction-preset-buttons" });
+      for (const preset of core.DRAFT_REANALYSIS_INSTRUCTION_PRESETS) {
+        const presetButton = createElement("button", {
+          className: "pc-instruction-preset-button",
+          type: "button",
+          text: preset.label,
+        });
+        const presetApplied = state.draftReanalysisInstructionsEnabled &&
+          state.draftReanalysisInstructionPresetId === preset.id;
+        presetButton.setAttribute("aria-pressed", String(presetApplied));
+        presetButton.dataset.presetId = preset.id;
+        presetButton.dataset.reviewTransient = "true";
+        presetButton.disabled = isWorking();
+        presetButton.addEventListener("click", () => {
+          state.draftReanalysisInstructionPresetId = preset.id;
+          state.draftReanalysisInstructions = preset.instruction;
+          state.draftReanalysisInstructionsEnabled = true;
+          render();
+        });
+        instructionPresetButtons.append(presetButton);
+      }
+      instructionPresets.append(instructionPresetButtons);
+      postprocessBody.append(instructionPresets);
+      let instructionPresetNotice = null;
       if (state.draftReanalysisInstructionsEnabled) {
         const instructions = makeTextInput(
           state.draftReanalysisInstructions,
           (value) => {
             state.draftReanalysisInstructions = value;
+            const selectedPreset = core.DRAFT_REANALYSIS_INSTRUCTION_PRESETS.find(
+              (preset) => preset.id === state.draftReanalysisInstructionPresetId,
+            );
+            if (selectedPreset && value !== selectedPreset.instruction) {
+              state.draftReanalysisInstructionPresetId = "";
+              for (const button of instructionPresetButtons.querySelectorAll("button")) {
+                button.setAttribute("aria-pressed", "false");
+              }
+              if (instructionPresetNotice) instructionPresetNotice.hidden = true;
+            }
           },
           {
             multiline: true,
@@ -3806,7 +4714,23 @@
         instructions.disabled = isWorking();
         postprocessBody.append(instructions);
       }
-      postprocessBody.append(preserveLorebookOption);
+      const selectedInstructionPreset = state.draftReanalysisInstructionsEnabled
+        ? core.DRAFT_REANALYSIS_INSTRUCTION_PRESETS.find(
+            (preset) => preset.id === state.draftReanalysisInstructionPresetId,
+          )
+        : null;
+      if (selectedInstructionPreset?.recommendation) {
+        instructionPresetNotice = createElement("p", {
+          className: "pc-instruction-preset-notice",
+          text: selectedInstructionPreset.recommendation,
+        });
+        postprocessBody.append(instructionPresetNotice);
+      }
+      const reanalysisCostEstimate = renderDraftReanalysisCostEstimate();
+      if (reanalysisCostEstimate) postprocessBody.append(reanalysisCostEstimate);
+      const postprocessRunRow = createElement("div", {
+        className: "pc-analysis-run-row pc-postprocess-run-row",
+      });
       const postprocessActions = createElement("div", {
         className: "pc-review-actions pc-postprocess-actions",
       });
@@ -3829,13 +4753,21 @@
         cancel.addEventListener("click", () => void abortAnalysis());
         postprocessActions.append(cancel);
       }
-      postprocessBody.append(postprocessActions);
+      postprocessRunRow.append(preserveLorebookOption, postprocessActions);
+      postprocessBody.append(postprocessRunRow);
       if (state.postprocessKind === "draft") postprocessBody.append(renderStatus());
       postprocess.append(postprocessBody);
       container.append(postprocess);
 
       const character = createElement("section", { className: "pc-review-section" });
-      character.append(createElement("h3", { text: "캐릭터" }));
+      const characterHeader = createElement("div", { className: "pc-review-heading" });
+      const characterTokenEstimate = createElement("span", {
+        className: "pc-review-token-estimate",
+        text: formatEstimatedTokens(resultTokenEstimate.characterTokens),
+      });
+      characterTokenEstimate.dataset.resultTokenCharacter = "true";
+      characterHeader.append(createElement("h3", { text: "캐릭터" }), characterTokenEstimate);
+      character.append(characterHeader);
       const characterGrid = createElement("div", { className: "pc-review-grid" });
       addReviewField(characterGrid, "이름", draft.character.name, (value) => {
         draft.character.name = value;
@@ -3878,16 +4810,30 @@
 
       const lorebook = createElement("section", { className: "pc-review-section" });
       const loreHeader = createElement("div", { className: "pc-review-heading" });
+      const loreMeta = createElement("div", { className: "pc-review-heading-meta" });
+      const lorebookTokenEstimate = createElement("span", {
+        className: "pc-review-token-estimate",
+        text: formatEstimatedTokens(resultTokenEstimate.lorebookTokens),
+      });
+      lorebookTokenEstimate.dataset.resultTokenLorebook = "true";
+      loreMeta.append(
+        createElement("span", { text: `${draft.lorebook.entries.length}개 항목` }),
+        lorebookTokenEstimate,
+      );
       loreHeader.append(
         createElement("h3", { text: "로어북" }),
-        createElement("span", { text: `${draft.lorebook.entries.length}개 항목` }),
+        loreMeta,
       );
       lorebook.append(loreHeader);
       const loreGrid = createElement("div", { className: "pc-review-grid pc-review-grid-compact" });
       addReviewField(loreGrid, "이름", draft.lorebook.name, (value) => {
         draft.lorebook.name = value;
       }, 1);
-      const categorySelect = createElement("select");
+      const categoryToggle = createElement("div", {
+        className: "pc-segmented pc-lorebook-category-toggle",
+        role: "radiogroup",
+      });
+      categoryToggle.setAttribute("aria-labelledby", "pc-lorebook-category-label");
       const lorebookCategoryLabels = {
         world: "세계관",
         character: "캐릭터",
@@ -3895,12 +4841,35 @@
         spellbook: "주문서",
         uncategorized: "미분류",
       };
-      for (const category of core.LOREBOOK_CATEGORIES) categorySelect.append(option(category, lorebookCategoryLabels[category] || category));
-      categorySelect.value = draft.lorebook.category;
-      categorySelect.addEventListener("change", () => {
-        draft.lorebook.category = categorySelect.value;
-      });
-      loreGrid.append(makeField("분류", categorySelect));
+      const categoryButtons = [];
+      for (const category of core.LOREBOOK_CATEGORIES) {
+        const categoryButton = createElement("button", {
+          type: "button",
+          text: lorebookCategoryLabels[category] || category,
+        });
+        const selected = draft.lorebook.category === category;
+        categoryButton.dataset.selected = String(selected);
+        categoryButton.setAttribute("role", "radio");
+        categoryButton.setAttribute("aria-checked", String(selected));
+        categoryButton.addEventListener("click", () => {
+          if (draft.lorebook.category === category) return;
+          draft.lorebook.category = category;
+          for (const [buttonIndex, button] of categoryButtons.entries()) {
+            const active = core.LOREBOOK_CATEGORIES[buttonIndex] === category;
+            button.dataset.selected = String(active);
+            button.setAttribute("aria-checked", String(active));
+          }
+          markSessionTouched();
+        });
+        categoryButtons.push(categoryButton);
+        categoryToggle.append(categoryButton);
+      }
+      const categoryField = createElement("div", { className: "pc-field" });
+      categoryField.append(
+        createElement("span", { id: "pc-lorebook-category-label", className: "pc-label", text: "분류" }),
+        categoryToggle,
+      );
+      loreGrid.append(categoryField);
       addReviewField(loreGrid, "설명", draft.lorebook.description, (value) => {
         draft.lorebook.description = value;
       });
@@ -3914,6 +4883,7 @@
       );
       let selectAllInput = null;
       let runSelectedButton = null;
+      let resplitCostSlot = null;
       const updateResplitSelectionControls = () => {
         const selectedCount = state.lorebookResplitSelection.size;
         if (selectAllInput) {
@@ -3924,6 +4894,31 @@
           runSelectedButton.textContent = `선택한 로어북 다시 나누기 (${selectedCount})`;
           runSelectedButton.disabled = isWorking() ||
             !postprocessConnectionId(state.lorebookResplitConnectionId) || selectedCount === 0;
+        }
+        if (resplitCostSlot) {
+          resplitCostSlot.textContent = "";
+          const connectionId = postprocessConnectionId(state.lorebookResplitConnectionId);
+          const selectedIndexes = [...state.lorebookResplitSelection].sort((left, right) => left - right);
+          if (connectionId && selectedIndexes.length) {
+            const wholeLorebook = selectedIndexes.length === draft.lorebook.entries.length;
+            const targetLorebook = wholeLorebook
+              ? draft.lorebook
+              : { ...draft.lorebook, entries: [draft.lorebook.entries[selectedIndexes[0]]] };
+            const selectedTokens = selectedIndexes.reduce(
+              (sum, index) => sum + chatCore.estimateTokens(JSON.stringify(draft.lorebook.entries[index])),
+              0,
+            );
+            resplitCostSlot.append(renderCostEstimate({
+              messages: core.buildLorebookResplitMessages(targetLorebook, state.settings, {
+                scope: wholeLorebook ? "all" : "entry",
+                characterContext: state.lorebookCharacterContext ? draft.character : null,
+              }),
+              connectionId,
+              referenceOutputTokens: selectedTokens,
+              requestCount: wholeLorebook ? 1 : selectedIndexes.length,
+              label: wholeLorebook ? "로어북 전체 다시 나누기" : `선택 항목 ${selectedIndexes.length.toLocaleString()}회 기준`,
+            }));
+          }
         }
       };
       if (draft.lorebook.entries.length === 0) {
@@ -4020,7 +5015,7 @@
       }));
       const resplitOptions = createElement("div", { className: "pc-lorebook-resplit-options" });
       const resplitChecks = createElement("div", { className: "pc-lorebook-resplit-checks" });
-      const selectAllLabel = createElement("label", { className: "pc-entry-exclude pc-resplit-select-all" });
+      const selectAllLabel = createElement("label", { className: "pc-setting-toggle pc-resplit-select-all" });
       selectAllInput = createElement("input");
       selectAllInput.type = "checkbox";
       selectAllInput.dataset.reviewTransient = "true";
@@ -4036,7 +5031,7 @@
       });
       selectAllLabel.append(selectAllInput, createElement("span", { text: "로어북 전체 선택" }));
       const characterContextOption = createElement("label", {
-        className: "pc-setting-toggle pc-lorebook-context-option",
+        className: "pc-setting-toggle pc-analysis-inline-option pc-lorebook-context-option",
       });
       const characterContextInput = createElement("input");
       characterContextInput.type = "checkbox";
@@ -4044,6 +5039,7 @@
       characterContextInput.disabled = isWorking();
       characterContextInput.addEventListener("change", () => {
         state.lorebookCharacterContext = characterContextInput.checked;
+        updateResplitSelectionControls();
       });
       const characterContextCopy = createElement("span");
       characterContextCopy.append(
@@ -4056,16 +5052,18 @@
       resplitChecks.append(selectAllLabel);
       resplitOptions.append(
         resplitChecks,
-        characterContextOption,
         makePostprocessModelField(
           state.lorebookResplitConnectionId,
           (value) => {
             state.lorebookResplitConnectionId = value;
+            updateResplitSelectionControls();
           },
           "로어북 다시 나누기 모델",
         ),
       );
       resplitFooter.append(resplitOptions);
+      resplitCostSlot = createElement("div", { className: "pc-cost-estimate-slot" });
+      resplitFooter.append(resplitCostSlot);
       const resplitFooterActions = createElement("div", {
         className: "pc-review-actions pc-lorebook-resplit-actions",
       });
@@ -4089,7 +5087,11 @@
         cancel.addEventListener("click", () => void abortAnalysis());
         resplitFooterActions.append(cancel);
       }
-      resplitFooter.append(resplitFooterActions);
+      const lorebookRunRow = createElement("div", {
+        className: "pc-analysis-run-row pc-lorebook-run-row",
+      });
+      lorebookRunRow.append(characterContextOption, resplitFooterActions);
+      resplitFooter.append(lorebookRunRow);
       if (["lorebook", "entry"].includes(state.postprocessKind)) resplitFooter.append(renderStatus());
       lorebookReanalysis.append(resplitFooter);
       lorebook.append(lorebookReanalysis);
@@ -4097,13 +5099,7 @@
       container.append(lorebook);
 
       const integration = createElement("section", { className: "pc-review-section" });
-      integration.append(
-        createElement("h3", { text: "로어북 저장 방식" }),
-        createElement("p", {
-          className: "pc-section-copy",
-          text: "새 캐릭터를 만든 뒤 선택한 로어북을 공식 연결 API로 캐릭터 카드에 연결합니다. 새 로어북은 캐릭터 전용 비전역 로어북으로 저장됩니다.",
-        }),
-      );
+      integration.append(createElement("h3", { text: "로어북 저장 방식" }));
       const strategySelect = createElement("select");
       for (const [value, label] of [
         ["new", "새 로어북 생성"],
@@ -4124,7 +5120,7 @@
         render();
       });
       const integrationGrid = createElement("div", { className: "pc-review-grid" });
-      integrationGrid.append(makeField("저장 방식", strategySelect, "프리셋 후보와 잔여 지침은 저장하지 않습니다."));
+      integrationGrid.append(makeField("저장 방식", strategySelect));
       if (state.lorebookSaveStrategy !== "new") {
         const lorebookSelect = createElement("select");
         lorebookSelect.append(option("", state.lorebooksStatus === "loading" ? "불러오는 중…" : "기존 로어북 선택"));
@@ -4168,7 +5164,7 @@
       presetBody.append(
         createElement("p", {
           className: "pc-section-copy",
-          text: "전체 역할극 문체, 시점, 출력 형식, 전역 생성 규칙 후보입니다. 실제 Marinara 프리셋은 생성하지 않습니다.",
+          text: "전체 역할극 문체, 시점, 출력 형식, 전역 생성 규칙 후보입니다. 실제 마리나라 프리셋은 생성하지 않습니다.",
         }),
       );
       const presetList = createElement("div", { className: "pc-entry-list" });
@@ -4243,17 +5239,34 @@
       container.append(residual);
 
       const saveSection = createElement("section", { className: "pc-review-section pc-save-section" });
+      const saveHeading = createElement("div", { className: "pc-save-heading" });
+      const infoButton = createElement("button", {
+        className: "pc-result-token-info",
+        type: "button",
+        text: "!",
+      });
+      infoButton.setAttribute("aria-label", "작업 결과 예상 토큰 보기");
+      infoButton.setAttribute("aria-controls", "pc-result-token-popover");
+      infoButton.setAttribute("aria-expanded", "false");
+      infoButton.setAttribute("aria-haspopup", "dialog");
+      infoButton.title = "작업 결과 예상 토큰";
+      const tokenAnchor = createElement("div", { className: "pc-result-token-anchor" });
+      tokenAnchor.append(infoButton, renderResultTokenPopover(resultTokenEstimate, infoButton));
+      saveHeading.append(
+        createElement("h3", { text: "마리나라 자산으로 저장" }),
+        tokenAnchor,
+      );
       saveSection.append(
-        createElement("h3", { text: "Marinara 자산으로 저장" }),
+        saveHeading,
         createElement("p", {
           className: "pc-section-copy",
-          text: "저장 범위를 선택한 뒤 하단의 저장 버튼을 누르세요. 프리셋 후보와 잔여 지침은 저장하지 않습니다.",
+          text: "저장 범위를 선택한 뒤 하단의 저장 버튼을 누르세요.",
         }),
       );
       const saveScopeGroup = createElement("div", {
         className: "pc-segmented pc-save-scope",
         role: "radiogroup",
-        ariaLabel: "Marinara 자산 저장 범위",
+        ariaLabel: "마리나라 자산 저장 범위",
       });
       for (const [scope, label] of [
         ["all", "캐릭터와 로어북"],
@@ -4430,7 +5443,7 @@
     async function loadConnections() {
       const previousSelection = state.selectedConnectionId;
       const previousAnalysisConnection = state.analysisConnectionId;
-      updateStatus("loading_connections", "Marinara의 AI 모델 연결 목록을 불러오는 중입니다.");
+      updateStatus("loading_connections", "마리나라의 AI 모델 연결 목록을 불러오는 중입니다.");
       render();
       try {
         state.connections = normalizeConnections(await apiRequest("/api/connections"));
@@ -4495,10 +5508,10 @@
       closeModal();
     };
     const keydown = (event) => {
-      const activeDialog = savedDraftCleanupDialog || replacementDialog || assetSaveDialog;
+      const activeDialog = characterImportDialog || savedDraftCleanupDialog || replacementDialog || assetSaveDialog;
       if (activeDialog && event.key === "Tab") {
         const buttons = [
-          ...activeDialog.element.querySelectorAll("button:not(:disabled)"),
+          ...activeDialog.element.querySelectorAll("button:not(:disabled), input:not(:disabled)"),
         ];
         if (!buttons.length) return;
         const current = buttons.indexOf(document.activeElement);
@@ -4510,7 +5523,8 @@
         return;
       }
       if (event.key === "Escape") {
-        if (savedDraftCleanupDialog) closeSavedDraftCleanupDialog(false);
+        if (characterImportDialog) closeCharacterImportDialog();
+        else if (savedDraftCleanupDialog) closeSavedDraftCleanupDialog(false);
         else if (replacementDialog) closeReplacementDialog(false);
         else if (assetSaveDialog) closeAssetSaveDialog(false);
         else requestClose();
@@ -4523,6 +5537,8 @@
       state.sessionTouched = true;
       if (state.view === "review") state.assetSaveConfirmed = false;
       markMergeAnalysisStaleIfNeeded();
+      if (state.view === "review") refreshReviewTokenSummary();
+      if (state.view === "review") refreshDraftReanalysisCostEstimate();
       scheduleSessionSave();
     };
     root.addEventListener("input", markSessionTouched);
@@ -4537,6 +5553,7 @@
       closeSavedDraftCleanupDialog(false);
       closeReplacementDialog(false);
       closeAssetSaveDialog(false);
+      closeCharacterImportDialog(false);
       if (sessionSaveTimer !== null) {
         hostMarinara.clearTimeout(sessionSaveTimer);
         sessionSaveTimer = null;
@@ -4572,6 +5589,7 @@
         : "";
       state.settingsLoaded = true;
       render();
+      void refreshCostExchangeRate();
       return Promise.all([
         loadConnections(),
         state.chatReferenceEnabled ? loadConversationSource() : Promise.resolve(),

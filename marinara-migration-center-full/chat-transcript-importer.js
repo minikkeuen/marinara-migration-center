@@ -141,7 +141,7 @@
       createElement("li", { text: "통짜 또는 분할을 선택하고 원본 프롬프트를 입력합니다." }),
       createElement("li", { text: "필요하면 대화 내역 참조를 켜고 분석할 대화를 선택합니다." }),
       createElement("li", { text: "변환 방식과 AI 모델 연결을 선택한 뒤 분석을 실행합니다." }),
-      createElement("li", { text: "작업소에서 결과를 검토하고 초안으로 보관하거나 Marinara 카드로 저장합니다." }),
+      createElement("li", { text: "작업소에서 결과를 검토하고 초안으로 보관하거나 마리나라 카드로 저장합니다." }),
     );
     const workspaceSection = createElement("section");
     workspaceSection.append(
@@ -790,7 +790,7 @@
       const message =
         payload && typeof payload === "object" && typeof payload.error === "string"
           ? payload.error
-          : `Marinara API 요청이 실패했습니다 (${response.status}).`;
+          : `마리나라 API 요청이 실패했습니다 (${response.status}).`;
       const retryAfterMs = importRequestCore?.parseRetryAfter(response.headers?.get?.("Retry-After")) ?? null;
       throw new MarinaraApiError(message, response.status, retryAfterMs);
     }
@@ -913,7 +913,7 @@
     const headerPrimary = createElement("div", { className: "mc-header-primary" });
     const headingGroup = createElement("div", { className: "cti-heading-group" });
     const title = createElement("h2", { id: "cti-title", text: "마리나라 이식 센터" });
-    const subtitle = createElement("p", { text: "엑셀, JSON 또는 TXT 대화 기록을 실제 Marinara 메시지로 저장합니다." });
+    const subtitle = createElement("p", { text: "엑셀, JSON 또는 TXT 대화 기록을 실제 마리나라 메시지로 저장합니다." });
     headingGroup.append(title, subtitle);
     const closeButton = createElement("button", {
       className: "cti-icon-button",

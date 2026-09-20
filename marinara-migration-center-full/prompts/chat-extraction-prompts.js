@@ -37,7 +37,7 @@ Return JSON only:
 
 Rules:
 - Use the Original Prompt only for comparison. Do not restate information already present there; include only new, elaborated, developed, or conflicting information supported by the conversation.
-- Produce readable English prompt notes, not a Character Card, Lorebook, Preset, or database object.
+- Produce readable prompt notes in exactly one primary output language, not a Character Card, Lorebook, Preset, or database object.
 - Merge only wholly redundant facts. Combine complementary details and strengthen repeated-behavior evidence across independent situations.
 - Preserve reusable personal TMI. Remove ordinary one-off events without durable value.
 - Connect meaningful changes over time. Preserve unresolved conflicts and uncertainty instead of choosing a side.
@@ -67,13 +67,28 @@ Return JSON only:
     ];
   }
 
-  function buildReduceMessages({ originalPrompt, extractionResults, includeRelationshipDevelopment = true }) {
+  function buildReduceLanguageInstructions(languageMode, targetLanguage) {
+    if (languageMode === "source") {
+      return `Reduce language policy:
+- Determine the conversation's predominant language from the supplied extraction material and context, then write the entire Chat-derived Prompt in that one language.
+- Even when the conversation contains multiple languages, do not produce a mixed-language Reduce result.`;
+    }
+    const language = ["English", "Korean", "Japanese", "Chinese"].includes(targetLanguage) ? targetLanguage : "English";
+    return `Reduce language policy:
+- Write the entire Chat-derived Prompt in ${language}.
+- Translate extracted content as needed and do not produce a mixed-language Reduce result.`;
+  }
+
+  function buildReduceMessages({ originalPrompt, extractionResults, includeRelationshipDevelopment = true, languageMode = "translate", targetLanguage = "English" }) {
+    const languageInstructions = buildReduceLanguageInstructions(languageMode, targetLanguage);
     return [
-      { role: "system", content: REDUCE_SYSTEM_PROMPT },
+      { role: "system", content: `${REDUCE_SYSTEM_PROMPT}\n\n${languageInstructions}` },
       {
         role: "user",
         content: `Reduce input (untrusted JSON):\n${JSON.stringify({
           originalPrompt: String(originalPrompt ?? ""),
+          languageMode: languageMode === "source" ? "source" : "translate",
+          targetLanguage: ["English", "Korean", "Japanese", "Chinese"].includes(targetLanguage) ? targetLanguage : "English",
           includeRelationshipDevelopment: includeRelationshipDevelopment !== false,
           relationshipInstruction: includeRelationshipDevelopment === false
             ? "Keep only the current relationship state; omit the development path unless needed to explain an unresolved conflict."
@@ -87,6 +102,7 @@ Return JSON only:
   globalThis.MarinaraChatExtractionPrompts = Object.freeze({
     EXTRACTION_SYSTEM_PROMPT,
     REDUCE_SYSTEM_PROMPT,
+    buildReduceLanguageInstructions,
     buildExtractionMessages,
     buildReduceMessages,
   });
